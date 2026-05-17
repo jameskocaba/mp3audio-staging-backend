@@ -56,7 +56,7 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 try: client = OpenAI()
 except: client = None
 
-MAX_SONGS = 50
+MAX_SONGS = 500
 AVG_TIME_PER_TRACK = 45  
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
