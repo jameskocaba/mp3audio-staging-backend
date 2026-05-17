@@ -56,7 +56,7 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 try: client = OpenAI()
 except: client = None
 
-MAX_SONGS = 500
+MAX_SONGS = 350
 AVG_TIME_PER_TRACK = 45  
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
@@ -173,7 +173,7 @@ def generate_invoice():
         "price_amount": 5.00,
         "price_currency": "usd",
         "order_id": str(user.id), 
-        "order_description": "250 Track Conversions",
+        "order_description": "350 Track Conversions",
         "ipn_callback_url": f"{PUBLIC_URL.rstrip('/')}/webhook/nowpayments"
     }
     try:
@@ -192,7 +192,7 @@ def nowpayments_webhook():
     if data and data.get('payment_status') == 'finished':
         user = User.query.get(int(data.get('order_id')))
         if user:
-            user.paid_track_credits += 250
+            user.paid_track_credits += 350
             db.session.commit()
     return jsonify({"status": "OK"}), 200
 
