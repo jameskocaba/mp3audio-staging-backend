@@ -32,7 +32,13 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-prod')
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_SECURE'] = True
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///mp3audio.db'
+
+# Render Postgres Compatibility Fix
+db_url = os.environ.get('DATABASE_URL', 'sqlite:///mp3audio.db')
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 CORS(app, supports_credentials=True, resources={
@@ -48,8 +54,29 @@ class User(db.Model):
     free_conversions_used = db.Column(db.Integer, default=0)
     paid_track_credits = db.Column(db.Integer, default=0)
 
+# Failsafe Table to track jobs in case of server crash
+class ActiveJob(db.Model):
+    id = db.Column(db.String(120), primary_key=True)
+    user_id = db.Column(db.Integer)
+    payment_method = db.Column(db.String(50))
+    tracks_locked = db.Column(db.Integer)
+
 with app.app_context():
     db.create_all()
+    
+    # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
+    zombie_jobs = ActiveJob.query.all()
+    if zombie_jobs:
+        for z_job in zombie_jobs:
+            user = User.query.get(z_job.user_id)
+            if user:
+                if z_job.payment_method == 'credits':
+                    user.paid_track_credits += z_job.tracks_locked
+                elif z_job.payment_method == 'free':
+                    user.free_conversions_used = max(0, user.free_conversions_used - z_job.tracks_locked)
+            db.session.delete(z_job)
+        db.session.commit()
+        logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
 
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
@@ -103,19 +130,26 @@ def get_or_create_user():
     session['user_id'] = ghost_user.id
     return ghost_user
 
-def refund_unused_credits(user_id, payment_method, unused_tracks):
-    if unused_tracks > 0 and user_id and payment_method:
-        try:
-            with app.app_context():
+def refund_unused_credits(user_id, payment_method, unused_tracks, session_id=None):
+    try:
+        with app.app_context():
+            # Release the crash-protection lock if it exists
+            if session_id:
+                job_lock = ActiveJob.query.get(session_id)
+                if job_lock:
+                    db.session.delete(job_lock)
+            
+            # Refund tracks
+            if unused_tracks > 0 and user_id and payment_method:
                 user = User.query.get(user_id)
                 if user:
                     if payment_method == 'credits':
                         user.paid_track_credits += unused_tracks
                     elif payment_method == 'free':
                         user.free_conversions_used = max(0, user.free_conversions_used - unused_tracks)
-                    db.session.commit()
-        except Exception as e:
-            logger.error(f"Failed to refund credits: {e}")
+            db.session.commit()
+    except Exception as e:
+        logger.error(f"Failed to refund credits: {e}")
 
 @app.route('/auth/login', methods=['POST'])
 def send_magic_link():
@@ -463,7 +497,7 @@ def run_conversion_task(session_id, url, entries, user_email=None, start_time=No
         current_processing_session = None
         
         unused_tracks = job['total'] - job['completed']
-        refund_unused_credits(user_id, payment_method, unused_tracks)
+        refund_unused_credits(user_id, payment_method, unused_tracks, session_id)
         
         cleanup_memory()
 
@@ -478,7 +512,7 @@ def worker_loop():
                 if job.get('cancelled'):
                     job['status'] = 'cancelled'
                     unused_tracks = job.get('total', 0) - job.get('completed', 0)
-                    refund_unused_credits(task_data.get('user_id'), task_data.get('payment_method'), unused_tracks)
+                    refund_unused_credits(task_data.get('user_id'), task_data.get('payment_method'), unused_tracks, sid)
                     continue
                     
                 run_conversion_task(
@@ -520,17 +554,20 @@ def start_conversion():
         if user.paid_track_credits >= total_tracks:
             user.paid_track_credits -= total_tracks
             payment_method = 'credits'
-            db.session.commit()
         elif user.free_conversions_used + total_tracks <= 5:
             user.free_conversions_used += total_tracks
             payment_method = 'free'
-            db.session.commit()
         else:
             available_free = 5 - user.free_conversions_used
             return jsonify({
                 "error": f"Limit reached. This playlist has {total_tracks} tracks, but you only have {available_free} free uses and {user.paid_track_credits} credits.", 
                 "requires_payment": True
             }), 403
+
+        # Create the active job lock and save user deductions simultaneously
+        active_job = ActiveJob(id=session_id, user_id=user.id, payment_method=payment_method, tracks_locked=total_tracks)
+        db.session.add(active_job)
+        db.session.commit()
 
         conversion_jobs[session_id] = {
             'status': 'queued', 'total': total_tracks, 'completed': 0, 'skipped': 0, 'current_track': 0, 
@@ -594,7 +631,7 @@ def cancel_conversion():
                 if item['session_id'] == session_id: 
                     conversion_queue.remove(item)
                     unused_tracks = job['total'] - job['completed']
-                    refund_unused_credits(item.get('user_id'), item.get('payment_method'), unused_tracks)
+                    refund_unused_credits(item.get('user_id'), item.get('payment_method'), unused_tracks, session_id)
                     break
         except: pass
         
