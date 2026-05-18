@@ -551,16 +551,20 @@ def start_conversion():
         if total_tracks == 0: return jsonify({"error": "No tracks found or supported."}), 400
         
         payment_method = None
-        if user.paid_track_credits >= total_tracks:
+        
+        # 1. If the playlist is 5 tracks or fewer, it's always free!
+        if total_tracks <= 5:
+            payment_method = 'free'
+            
+        # 2. If it's larger than 5 tracks, check if they have enough paid credits
+        elif user.paid_track_credits >= total_tracks:
             user.paid_track_credits -= total_tracks
             payment_method = 'credits'
-        elif user.free_conversions_used + total_tracks <= 5:
-            user.free_conversions_used += total_tracks
-            payment_method = 'free'
+            
+        # 3. If it's larger than 5 tracks AND they don't have enough credits, prompt payment
         else:
-            available_free = 5 - user.free_conversions_used
             return jsonify({
-                "error": f"Limit reached. This playlist has {total_tracks} tracks, but you only have {available_free} free uses and {user.paid_track_credits} credits.", 
+                "error": f"Playlists larger than 5 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
                 "requires_payment": True
             }), 403
 
