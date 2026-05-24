@@ -1,6 +1,3 @@
-import gevent.monkey
-gevent.monkey.patch_all()
-
 import os, uuid, logging, glob, zipfile, certifi, gc, shutil, time, subprocess, math, tempfile, hmac, hashlib
 from flask import Flask, request, send_file, jsonify, session, redirect, url_for
 from flask_cors import CORS
@@ -61,22 +58,30 @@ class ActiveJob(db.Model):
     payment_method = db.Column(db.String(50))
     tracks_locked = db.Column(db.Integer)
 
-with app.app_context():
-    db.create_all()
-    
-    # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
-    zombie_jobs = ActiveJob.query.all()
-    if zombie_jobs:
-        for z_job in zombie_jobs:
-            user = User.query.get(z_job.user_id)
-            if user:
-                if z_job.payment_method == 'credits':
-                    user.paid_track_credits += z_job.tracks_locked
-                elif z_job.payment_method == 'free':
-                    user.free_conversions_used = max(0, user.free_conversions_used - z_job.tracks_locked)
-            db.session.delete(z_job)
-        db.session.commit()
-        logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
+def initialize_database():
+    """Runs database setup in the background to prevent boot stalling."""
+    with app.app_context():
+        try:
+            db.create_all()
+            
+            # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
+            zombie_jobs = ActiveJob.query.all()
+            if zombie_jobs:
+                for z_job in zombie_jobs:
+                    user = User.query.get(z_job.user_id)
+                    if user:
+                        if z_job.payment_method == 'credits':
+                            user.paid_track_credits += z_job.tracks_locked
+                        elif z_job.payment_method == 'free':
+                            user.free_conversions_used = max(0, user.free_conversions_used - z_job.tracks_locked)
+                    db.session.delete(z_job)
+                db.session.commit()
+                logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
+        except Exception as e:
+            logger.error(f"Database initialization delayed or failed: {e}")
+
+# Trigger DB setup safely without blocking Gunicorn
+Thread(target=initialize_database, daemon=True).start()
 
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
