@@ -222,12 +222,25 @@ def nowpayments_webhook():
     secret_key = os.environ.get('NOWPAYMENTS_IPN_SECRET', '').encode('utf-8')
     if request.headers.get('x-nowpayments-sig') != hmac.new(secret_key, request.get_data(), hashlib.sha512).hexdigest():
         return jsonify({"error": "Invalid Signature"}), 403
+        
     data = request.json
+    
     if data and data.get('payment_status') == 'finished':
-        user = User.query.get(int(data.get('order_id')))
-        if user:
-            user.paid_track_credits += 350
-            db.session.commit()
+        try:
+            price_amount = float(data.get('price_amount', 0))
+            price_currency = data.get('price_currency', '').lower()
+            
+            if price_amount == 5.00 and price_currency == 'usd':
+                user = User.query.get(int(data.get('order_id')))
+                if user:
+                    user.paid_track_credits += 350
+                    db.session.commit()
+            else:
+                logger.warning(f"Payment amount mismatch: Expected $5.00 usd, got {price_amount} {price_currency} for order {data.get('order_id')}")
+                
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error parsing payment amount: {e}")
+            
     return jsonify({"status": "OK"}), 200
 
 def notify_user_complete(session_id, user_email, track_count, html_summaries=""):
