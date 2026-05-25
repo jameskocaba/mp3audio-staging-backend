@@ -598,14 +598,33 @@ def start_conversion():
             'last_update': time.time(), 'email_summaries': '', 'sub_progress': 0 
         }
         
-        conversion_queue.append({
+        new_task = {
             'session_id': session_id, 'url': url, 'entries': valid_entries,
             'email': user.email if not user.email.startswith('anon_') else None,
             'user_id': user.id, 'payment_method': payment_method,
             'start_time': data.get('start_time'), 'end_time': data.get('end_time'),
             'transcribe_audio': data.get('transcribe_audio', False)
-        })
-        return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": len(conversion_queue)}), 200
+        }
+        
+        if payment_method == 'credits':
+            insert_idx = len(conversion_queue)
+            for i, item in enumerate(conversion_queue):
+                if item.get('payment_method') != 'credits':
+                    insert_idx = i
+                    break
+            conversion_queue.insert(insert_idx, new_task)
+            queue_position = insert_idx + 1
+        else:
+            conversion_queue.append(new_task)
+            queue_position = len(conversion_queue)
+
+        return jsonify({
+            "session_id": session_id, 
+            "total_tracks": total_tracks, 
+            "status": "queued", 
+            "queue_position": queue_position
+        }), 200
+        
     except Exception as e:
         return jsonify({"error": "This URL may be protected and unsupported."}), 400
 
