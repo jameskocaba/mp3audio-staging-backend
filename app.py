@@ -1,5 +1,6 @@
 import os, uuid, logging, glob, zipfile, certifi, gc, shutil, time, subprocess, math, tempfile, hmac, hashlib
 from flask import Flask, request, send_file, jsonify, session, redirect, url_for
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
@@ -573,6 +574,7 @@ def start_conversion():
         # 1. If the playlist is 5 tracks or fewer, it's always free!
         if total_tracks <= 5:
             payment_method = 'free'
+            user.free_conversions_used += total_tracks
             
         # 2. If it's larger than 5 tracks, check if they have enough paid credits
         elif user.paid_track_credits >= total_tracks:
@@ -681,6 +683,8 @@ def cancel_conversion():
 
 @app.route('/download/<session_id>/<filename>')
 def download_file(session_id, filename):
+    session_id = secure_filename(session_id)
+    filename = secure_filename(filename)
     file_path = os.path.join(DOWNLOAD_FOLDER, session_id, filename)
     if os.path.exists(file_path): return send_file(file_path, as_attachment=True)
     return "File not found", 404
