@@ -284,7 +284,6 @@ def transcribe_audio_file(mp3_file_path, job=None):
                 with open(chunk_path, "rb") as audio_file:
                     transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file)
                 full_transcript += transcript.text + " "
-            except: full_transcript += f"\n[Warning: AI transcription failed for this segment.]\n"
             except Exception as e:
                 logger.error(f"Failed to transcribe chunk {i}: {e}")
                 full_transcript += f"\n[Warning: AI transcription failed for this segment.]\n"
@@ -300,12 +299,10 @@ def transcribe_audio_file(mp3_file_path, job=None):
             doc = SimpleDocTemplate(pdf_file_path, pagesize=letter)
             story = [Paragraph(full_transcript.strip().replace('\n', '<br/>'), getSampleStyleSheet()["Normal"])]
             doc.build(story)
-        except: pdf_file_path = None
         except Exception as e:
             logger.error(f"PDF creation failed: {e}")
             pdf_file_path = None
         return text_file_path, pdf_file_path
-    except: return None, None
     except Exception as e:
         logger.error(f"Transcription process failed: {e}")
         return None, None
@@ -328,12 +325,10 @@ def generate_diy_manual(transcript_text_path, job=None):
         with open(manual_path, "w", encoding="utf-8") as f: f.write(manual_html)
         try:
             with open(pdf_path, "w+b") as result_file: pisa.CreatePDF(manual_html, dest=result_file)
-        except: pdf_path = None
         except Exception as e:
             logger.error(f"PDF creation failed: {e}")
             pdf_path = None
         return manual_path, pdf_path, manual_html
-    except: return None, None, None
     except Exception as e:
         logger.error(f"Manual generation failed: {e}")
         return None, None, None
