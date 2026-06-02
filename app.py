@@ -168,8 +168,16 @@ def send_magic_link():
         
     token = serializer.dumps(email, salt='magic-link')
     magic_url = f"{FRONTEND_URL}?token={token}"
-    html = f"""<div style="padding: 20px;"><h2>Login to mp3aud.io</h2><a href="{magic_url}" style="background-color: #007BFF; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Log In Now</a></div>"""
-    send_email_notification(email, "Your Login Link", html)
+    
+    email_subject = "Welcome Back - Your MP3aud.io Login Link"
+    html = f"""
+    <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #ea580c;">Secure Login</h2>
+        <p style="color: #334155; font-size: 16px;">Click the button below to securely log in to your MP3aud.io account and manage your credits.</p>
+        <a href="{magic_url}" style="background-color: #ea580c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold; margin-top: 10px;">Log In Now</a>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 20px;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
+    </div>"""
+    send_email_notification(email, email_subject, html)
     return jsonify({"success": True, "message": "Magic link sent to your email."})
 
 @app.route('/auth/verify', methods=['POST'])
