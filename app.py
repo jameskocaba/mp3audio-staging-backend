@@ -258,15 +258,14 @@ def nowpayments_webhook():
 def notify_user_complete(session_id, user_email, track_count, html_summaries=""):
     if not user_email: return
     download_link = f"{PUBLIC_URL.rstrip('/')}/download/{session_id}/playlist_backup.zip"
-    manuals_section = f"<div style='margin-top: 30px; padding: 20px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;'>{html_summaries}</div>" if html_summaries else ""
+    manuals_section = f"<div style='margin-top: 25px; padding: 20px; background-color: rgba(255,255,255,0.6); border-radius: 8px; border: 1px solid #fcd34d; color: #92400e;'>{html_summaries}</div>" if html_summaries else ""
     html = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-        <h2 style="color: #2980b9;">Your Files Are Ready</h2>
-        <p>Your conversion of <strong>{track_count} media file(s)</strong> has finished processing.</p>
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 30px; max-width: 600px; margin: 0 auto; border: 2px solid #fde68a; border-radius: 12px; background-color: #fffbeb;">
+        <h2 style="margin: 0 0 15px 0; color: #92400e; font-size: 22px; font-weight: 800;">Your Files Are Ready</h2>
+        <p style="color: #92400e; font-size: 15px; margin-bottom: 24px; line-height: 1.5;">Your conversion of <strong>{track_count} media file(s)</strong> has finished processing.</p>
+        <a href="{download_link}" style="background-color: #ea580c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px;">Download ZIP Archive</a>
         {manuals_section}
-        <div style="margin: 30px 0; text-align: center;">
-            <a href="{download_link}" style="background-color: #ea580c; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold;">Download ZIP Archive</a>
-        </div>
+        <p style="color: #b45309; font-size: 12px; margin-top: 25px; line-height: 1.4;">This download link is secure and will automatically expire in 1 hour.</p>
     </div>
     """
     send_email_notification(user_email, "Your Conversion is Ready 📦", html)
