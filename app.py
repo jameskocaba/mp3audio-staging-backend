@@ -565,7 +565,8 @@ def start_conversion():
     cleanup_old_sessions()
     user = get_or_create_user()
     data = request.json
-    url = data.get('url', '').strip()
+    raw_url = data.get('url', '').strip()
+    url = raw_url.split('?')[0] if raw_url else ''
     session_id = data.get('session_id', str(uuid.uuid4()))
     if not url: return jsonify({"error": "No URL provided"}), 400
     try:
