@@ -60,7 +60,7 @@ def post_to_instagram(total_tracks, unique_users):
 
 if __name__ == "__main__":
     tracks, users = get_daily_stats()
-    if tracks > 0:
+    if tracks > 10:
         post_to_instagram(tracks, users)
     else:
-        print("No conversions in the last 24 hours. Skipping post.")
+        print(f"Only {tracks} conversions in the last 24 hours (threshold is >10). Skipping post.")
