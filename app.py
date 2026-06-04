@@ -58,12 +58,6 @@ class ActiveJob(db.Model):
     payment_method = db.Column(db.String(50))
     tracks_locked = db.Column(db.Integer)
 
-# Table to track conversion history for analytics/social media
-class ConversionLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer)
-    track_count = db.Column(db.Integer)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 def initialize_database():
     """Runs database setup in the background to prevent boot stalling."""
@@ -529,14 +523,6 @@ def run_conversion_task(session_id, url, entries, user_email=None, start_time=No
                 job['zip_ready'] = True
                 job['zip_path'] = f"/download/{session_id}/playlist_backup.zip"
                 
-                # Log the successful conversion for daily stats
-                try:
-                    with app.app_context():
-                        log_entry = ConversionLog(user_id=user_id, track_count=job['completed'])
-                        db.session.add(log_entry)
-                        db.session.commit()
-                except Exception as e:
-                    logger.error(f"Failed to log conversion history: {e}")
 
                 if user_email: notify_user_complete(session_id, user_email, job['completed'], job.get('email_summaries', ''))
         else:
