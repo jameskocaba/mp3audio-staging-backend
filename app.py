@@ -58,6 +58,13 @@ class ActiveJob(db.Model):
     payment_method = db.Column(db.String(50))
     tracks_locked = db.Column(db.Integer)
 
+class PopularURL(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    url = db.Column(db.String(500), unique=True, nullable=False)
+    title = db.Column(db.String(200))
+    artist = db.Column(db.String(200))
+    conversion_count = db.Column(db.Integer, default=1)
+    last_converted = db.Column(db.DateTime, default=datetime.utcnow)
 
 def initialize_database():
     """Runs database setup in the background to prevent boot stalling."""
@@ -611,6 +618,29 @@ def start_conversion():
         # Create the active job lock and save user deductions simultaneously
         active_job = ActiveJob(id=session_id, user_id=user.id, payment_method=payment_method, tracks_locked=total_tracks)
         db.session.add(active_job)
+        
+        # --- TRACK POPULAR URL ---
+        playlist_title = info.get('title')
+        if not playlist_title and entries:
+            playlist_title = entries[0].get('title', 'Unknown Title')
+            
+        playlist_artist = info.get('uploader')
+        if not playlist_artist and entries:
+            playlist_artist = entries[0].get('uploader', 'Unknown Artist')
+
+        popular_url = PopularURL.query.filter_by(url=url).first()
+        if popular_url:
+            popular_url.conversion_count += 1
+            popular_url.last_converted = datetime.utcnow()
+        else:
+            popular_url = PopularURL(
+                url=url, 
+                title=playlist_title[:200] if playlist_title else 'Audio URL', 
+                artist=playlist_artist[:200] if playlist_artist else ''
+            )
+            db.session.add(popular_url)
+        # -------------------------
+        
         db.session.commit()
 
         conversion_jobs[session_id] = {
@@ -708,6 +738,25 @@ def download_file(session_id, filename):
     file_path = os.path.join(DOWNLOAD_FOLDER, session_id, filename)
     if os.path.exists(file_path): return send_file(file_path, as_attachment=True)
     return "File not found", 404
+
+@app.route('/api/top-urls', methods=['GET'])
+def get_top_urls():
+    try:
+        # Get the top 20 most converted URLs, break ties by newest conversion date
+        top_urls = PopularURL.query.order_by(PopularURL.conversion_count.desc(), PopularURL.last_converted.desc()).limit(20).all()
+        result = []
+        for item in top_urls:
+            result.append({
+                "title": item.title or "Unknown Title",
+                "desc": item.artist or "Various Artists",
+                "link": item.url,
+                "date": item.last_converted.strftime("%b %d, %Y"),
+                "count": item.conversion_count
+            })
+        return jsonify({"success": True, "data": result}), 200
+    except Exception as e:
+        logger.error(f"Error fetching top urls: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/health')
 def health(): return jsonify({"status": "ok"}), 200
