@@ -8,6 +8,8 @@ from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from yt_dlp import YoutubeDL
 import json
 import requests
+import boto3
+from botocore.exceptions import ClientError
 
 from threading import Thread, BoundedSemaphore
 from collections import deque
@@ -134,6 +136,17 @@ AVG_TIME_PER_TRACK = 45
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
 
+# --- AWS S3 Configuration ---
+S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
+s3_client = None
+if S3_BUCKET:
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION')
+    )
+
 def cleanup_memory(): gc.collect()
 
 def cleanup_old_sessions():
@@ -152,6 +165,14 @@ def cleanup_old_sessions():
             for job in old_jobs:
                 session_dir = os.path.join(DOWNLOAD_FOLDER, job.id)
                 if os.path.exists(session_dir): shutil.rmtree(session_dir, ignore_errors=True)
+                
+                # Clean up S3 object to prevent paying for endless cloud storage
+                if s3_client and S3_BUCKET:
+                    try:
+                        s3_client.delete_object(Bucket=S3_BUCKET, Key=f"downloads/{job.id}/playlist_backup.zip")
+                    except Exception as e:
+                        logger.error(f"S3 Delete failed: {e}")
+                        
                 db.session.delete(job)
                 
             # 2. Catch ZOMBIE jobs stuck in 'processing' for over 3 hours
@@ -608,6 +629,14 @@ def run_conversion_task(session_id):
                     job.zip_ready = True
                     job.zip_path = f"/download/{session_id}/playlist_backup.zip"
                     
+                    # Upload to S3 and immediately delete the local disk footprint
+                    if s3_client and S3_BUCKET:
+                        try:
+                            s3_client.upload_file(zip_path, S3_BUCKET, f"downloads/{session_id}/playlist_backup.zip")
+                            shutil.rmtree(session_dir, ignore_errors=True)
+                        except Exception as e:
+                            logger.error(f"S3 Upload failed: {e}")
+                    
                     if job.user_email: notify_user_complete(session_id, job.user_email, job.completed, job.email_summaries)
             db.session.commit()
             
@@ -805,6 +834,20 @@ def cancel_conversion():
 def download_file(session_id, filename):
     session_id = secure_filename(session_id)
     filename = secure_filename(filename)
+    
+    # Intercept the request and redirect to a secure AWS S3 URL if configured
+    if s3_client and S3_BUCKET:
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET, 'Key': f"downloads/{session_id}/{filename}"},
+                ExpiresIn=3600 # Link expires in 1 hour
+            )
+            return redirect(presigned_url)
+        except ClientError as e:
+            logger.error(f"Error generating presigned URL: {e}")
+            return "File not found", 404
+            
     file_path = os.path.join(DOWNLOAD_FOLDER, session_id, filename)
     if os.path.exists(file_path): return send_file(file_path, as_attachment=True)
     return "File not found", 404
