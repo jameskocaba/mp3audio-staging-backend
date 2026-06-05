@@ -834,6 +834,43 @@ def get_top_urls():
         # This handles cases where the DB table is still initializing
         return jsonify({"success": True, "data": [], "error": str(e)}), 200
 
+@app.route('/admin/jobs', methods=['GET'])
+def admin_jobs():
+    # Secure the route with a secret key
+    admin_secret = os.environ.get('ADMIN_SECRET')
+    provided_secret = request.headers.get('X-Admin-Secret') or request.args.get('secret')
+    
+    if admin_secret and provided_secret != admin_secret:
+        return jsonify({"error": "Unauthorized. Invalid or missing admin secret."}), 401
+        
+    try:
+        processing_jobs = ConversionJob.query.filter_by(status='processing').all()
+        queued_jobs = ConversionJob.query.filter_by(status='queued').order_by(
+            ConversionJob.priority.desc(), ConversionJob.created_at.asc()
+        ).all()
+        
+        def format_job(job):
+            return {
+                "id": job.id,
+                "user_email": job.user_email or "Guest",
+                "payment_method": job.payment_method,
+                "priority": job.priority,
+                "progress": f"{job.completed} / {job.total}",
+                "sub_progress_percent": job.sub_progress,
+                "current_status": job.current_status,
+                "created_at": job.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "last_update": datetime.fromtimestamp(job.last_update).strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+            
+        return jsonify({
+            "total_processing": len(processing_jobs),
+            "total_queued": len(queued_jobs),
+            "processing": [format_job(j) for j in processing_jobs],
+            "queued": [format_job(j) for j in queued_jobs]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/health')
 def health(): return jsonify({"status": "ok"}), 200
 @app.route('/')
