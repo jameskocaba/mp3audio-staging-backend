@@ -141,7 +141,9 @@ def cleanup_old_sessions():
         with app.app_context():
             current_time = time.time()
             threshold_time = current_time - 3600
+            stuck_threshold = current_time - (3600 * 3) # 3 hours
             
+            # 1. Clean up jobs that finished over 1 hour ago
             old_jobs = ConversionJob.query.filter(
                 ConversionJob.status.notin_(['processing', 'queued']),
                 ConversionJob.last_update < threshold_time
@@ -151,8 +153,32 @@ def cleanup_old_sessions():
                 session_dir = os.path.join(DOWNLOAD_FOLDER, job.id)
                 if os.path.exists(session_dir): shutil.rmtree(session_dir, ignore_errors=True)
                 db.session.delete(job)
+                
+            # 2. Catch ZOMBIE jobs stuck in 'processing' for over 3 hours
+            stuck_jobs = ConversionJob.query.filter(
+                ConversionJob.status == 'processing',
+                ConversionJob.last_update < stuck_threshold
+            ).all()
+            
+            for job in stuck_jobs:
+                unused_tracks = job.total - job.completed
+                if unused_tracks > 0:
+                    refund_unused_credits(job.user_id, job.payment_method, unused_tracks)
+                job.status = 'error'
+                job.error = 'Job timed out and was cancelled by the system.'
+                job.last_update = time.time() # Reset timer so it gets deleted in the next hourly sweep
+                
             db.session.commit()
-    except: pass
+    except Exception as e:
+        logger.error(f"Automated cleanup error: {e}")
+
+def automated_cleanup_loop():
+    while True:
+        time.sleep(900) # Run every 15 minutes
+        cleanup_old_sessions()
+
+# Start the automated cleanup timer in the background
+Thread(target=automated_cleanup_loop, daemon=True).start()
 
 def send_email_notification(recipient, subject, html_content):
     try:
@@ -631,7 +657,6 @@ queue_worker.start()
 
 @app.route('/start_conversion', methods=['POST'])
 def start_conversion():
-    cleanup_old_sessions()
     user = get_or_create_user()
     data = request.json
     raw_url = data.get('url', '').strip()
