@@ -38,8 +38,10 @@ if db_url.startswith("postgres://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# For production security, it's best to lock down CORS to your specific frontend URL.
+# This reads the URL from the same environment variable used for magic links.
 CORS(app, supports_credentials=True, resources={
-    r"/*": { "origins": "*", "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"] }
+    r"/*": { "origins": [os.environ.get('FRONTEND_URL', 'https://mp3aud.io')], "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"] }
 })
 
 db = SQLAlchemy(app)
