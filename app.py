@@ -53,12 +53,41 @@ class User(db.Model):
     free_conversions_used = db.Column(db.Integer, default=0)
     paid_track_credits = db.Column(db.Integer, default=0)
 
-# Failsafe Table to track jobs in case of server crash
-class ActiveJob(db.Model):
+class ConversionJob(db.Model):
     id = db.Column(db.String(120), primary_key=True)
     user_id = db.Column(db.Integer)
     payment_method = db.Column(db.String(50))
-    tracks_locked = db.Column(db.Integer)
+    
+    # Queue & Status
+    status = db.Column(db.String(20), default='queued') # queued, processing, completed, error, cancelled
+    priority = db.Column(db.Integer, default=0) # 1 for credits, 0 for free
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_update = db.Column(db.Float, default=time.time)
+    
+    # Processing State
+    total = db.Column(db.Integer, default=0)
+    completed = db.Column(db.Integer, default=0)
+    skipped = db.Column(db.Integer, default=0)
+    current_track = db.Column(db.Integer, default=0)
+    sub_progress = db.Column(db.Integer, default=0)
+    current_status = db.Column(db.String(255), default='')
+    current_thumbnail = db.Column(db.String(500), default='')
+    error = db.Column(db.Text, default='')
+    email_summaries = db.Column(db.Text, default='')
+    zip_ready = db.Column(db.Boolean, default=False)
+    zip_path = db.Column(db.String(500), default='')
+    
+    # JSON Data (Task payload and results)
+    entries = db.Column(db.JSON, default=list)
+    completed_tracks = db.Column(db.JSON, default=list)
+    failed_track_details = db.Column(db.JSON, default=list)
+    
+    # User Input Metadata
+    url = db.Column(db.String(500))
+    user_email = db.Column(db.String(120), nullable=True)
+    start_time = db.Column(db.String(20), nullable=True)
+    end_time = db.Column(db.String(20), nullable=True)
+    transcribe_audio = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -75,16 +104,18 @@ def initialize_database():
             db.create_all()
             
             # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
-            zombie_jobs = ActiveJob.query.all()
+            zombie_jobs = ConversionJob.query.filter(ConversionJob.status.in_(['queued', 'processing'])).all()
             if zombie_jobs:
                 for z_job in zombie_jobs:
-                    user = User.query.get(z_job.user_id)
-                    if user:
+                    user = User.query.get(z_job.user_id) if z_job.user_id else None
+                    unused_tracks = z_job.total - z_job.completed
+                    if user and unused_tracks > 0:
                         if z_job.payment_method == 'credits':
-                            user.paid_track_credits += z_job.tracks_locked
+                            user.paid_track_credits += unused_tracks
                         elif z_job.payment_method == 'free':
-                            user.free_conversions_used = max(0, user.free_conversions_used - z_job.tracks_locked)
-                    db.session.delete(z_job)
+                            user.free_conversions_used = max(0, user.free_conversions_used - unused_tracks)
+                    z_job.status = 'error'
+                    z_job.error = 'Job interrupted by server reboot.'
                 db.session.commit()
                 logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
         except Exception as e:
@@ -103,23 +134,24 @@ AVG_TIME_PER_TRACK = 45
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
 
-conversion_jobs = {} 
-zip_locks = {}
-conversion_queue = deque() 
-current_processing_session = None 
-
 def cleanup_memory(): gc.collect()
 
 def cleanup_old_sessions():
     try:
-        current_time = time.time()
-        for session_id in list(conversion_jobs.keys()):
-            job = conversion_jobs[session_id]
-            if job['status'] not in ['processing', 'queued'] and current_time - job.get('last_update', 0) > 3600:
-                session_dir = os.path.join(DOWNLOAD_FOLDER, session_id)
+        with app.app_context():
+            current_time = time.time()
+            threshold_time = current_time - 3600
+            
+            old_jobs = ConversionJob.query.filter(
+                ConversionJob.status.notin_(['processing', 'queued']),
+                ConversionJob.last_update < threshold_time
+            ).all()
+            
+            for job in old_jobs:
+                session_dir = os.path.join(DOWNLOAD_FOLDER, job.id)
                 if os.path.exists(session_dir): shutil.rmtree(session_dir, ignore_errors=True)
-                del conversion_jobs[session_id]
-                if session_id in zip_locks: del zip_locks[session_id]
+                db.session.delete(job)
+            db.session.commit()
     except: pass
 
 def send_email_notification(recipient, subject, html_content):
@@ -148,13 +180,6 @@ def get_or_create_user():
 def refund_unused_credits(user_id, payment_method, unused_tracks, session_id=None):
     try:
         with app.app_context():
-            # Release the crash-protection lock if it exists
-            if session_id:
-                job_lock = ActiveJob.query.get(session_id)
-                if job_lock:
-                    db.session.delete(job_lock)
-            
-            # Refund tracks
             if unused_tracks > 0 and user_id and payment_method:
                 user = User.query.get(user_id)
                 if user:
@@ -287,7 +312,9 @@ def transcribe_audio_file(mp3_file_path, job=None):
         temp_dir = tempfile.mkdtemp()
         chunk_pattern = os.path.join(temp_dir, "chunk_%03d.mp3")
         ffmpeg_exe = 'ffmpeg_bin/ffmpeg' if os.path.exists('ffmpeg_bin/ffmpeg') else 'ffmpeg'
-        if job: job['current_status'] = 'Slicing audio for AI analysis...'
+        if job: 
+            job.current_status = 'Slicing audio for AI analysis...'
+            db.session.commit()
         subprocess.run([ffmpeg_exe, '-y', '-i', mp3_file_path, '-f', 'segment', '-segment_time', '900', '-c', 'copy', chunk_pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         
         chunks = sorted(glob.glob(os.path.join(temp_dir, "chunk_*.mp3")))
@@ -296,8 +323,9 @@ def transcribe_audio_file(mp3_file_path, job=None):
         
         for i, chunk_path in enumerate(chunks):
             if job:
-                job['current_status'] = f'Transcribing audio (Part {i+1} of {total_chunks})...'
-                job['sub_progress'] = int((i / total_chunks) * 100)
+                job.current_status = f'Transcribing audio (Part {i+1} of {total_chunks})...'
+                job.sub_progress = int((i / total_chunks) * 100)
+                db.session.commit()
             try:
                 with open(chunk_path, "rb") as audio_file:
                     transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file)
@@ -306,7 +334,9 @@ def transcribe_audio_file(mp3_file_path, job=None):
                 logger.error(f"Failed to transcribe chunk {i}: {e}")
                 full_transcript += f"\n[Warning: AI transcription failed for this segment.]\n"
         
-        if job: job['sub_progress'] = 100
+        if job: 
+            job.sub_progress = 100
+            db.session.commit()
         shutil.rmtree(temp_dir, ignore_errors=True)
                 
         text_file_path = mp3_file_path.replace('.mp3', '.txt')
@@ -328,7 +358,10 @@ def transcribe_audio_file(mp3_file_path, job=None):
 def generate_diy_manual(transcript_text_path, job=None):
     if not client: return None, None, None
     try:
-        if job: job['current_status'] = 'Formatting AI summary...'; job['sub_progress'] = 0
+        if job: 
+            job.current_status = 'Formatting AI summary...'
+            job.sub_progress = 0
+            db.session.commit()
         with open(transcript_text_path, "r", encoding="utf-8") as file: transcript = file.read()[:100000] 
         system_prompt = "You are an expert technical writer. Format the provided text into a highly detailed, comprehensive document in HTML format."
         response = client.chat.completions.create(
@@ -336,7 +369,9 @@ def generate_diy_manual(transcript_text_path, job=None):
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"Here is the raw transcript:\n\n{transcript}"}],
             temperature=0.3 
         )
-        if job: job['sub_progress'] = 100
+        if job: 
+            job.sub_progress = 100
+            db.session.commit()
         manual_html = response.choices[0].message.content
         manual_path = transcript_text_path.replace('.txt', '_summary.html')
         pdf_path = transcript_text_path.replace('.txt', '_summary.pdf')
@@ -351,24 +386,30 @@ def generate_diy_manual(transcript_text_path, job=None):
         logger.error(f"Manual generation failed: {e}")
         return None, None, None
 
-def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, lock, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio):
-    job = conversion_jobs.get(session_id)
-    if not job or job.get('cancelled'): return False
+def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio):
+    job = ConversionJob.query.get(session_id)
+    if not job or job.status == 'cancelled': return False
 
     temp_filename_base = f"track_{track_index}"
+    last_commit_time = [time.time()]
     
     def progress_hook(d):
-        if job.get('cancelled'): 
+        if job.status == 'cancelled': 
             raise Exception("CancelledByUser")
             
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
             if total and d.get('downloaded_bytes'):
-                job['sub_progress'] = int((d['downloaded_bytes'] / total) * 100)
-            job['current_status'] = 'Downloading audio...'
+                job.sub_progress = int((d['downloaded_bytes'] / total) * 100)
+            job.current_status = 'Downloading audio...'
         elif d['status'] == 'finished':
-            job['sub_progress'] = 100
-            job['current_status'] = 'Extracting audio...'
+            job.sub_progress = 100
+            job.current_status = 'Extracting audio...'
+            
+        if time.time() - last_commit_time[0] > 1.0 or d['status'] == 'finished':
+            job.last_update = time.time()
+            db.session.commit()
+            last_commit_time[0] = time.time()
 
     ydl_opts = {
         'format': 'http_mp3_128/bestaudio[ext=mp3]/bestaudio/best',
@@ -405,20 +446,22 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         ydl_opts['external_downloader_args'] = {'ffmpeg_i': ffmpeg_args}
 
     try:
-        job['current_track'] = track_index
-        job['last_update'] = time.time()
-        job['current_status'] = f'Initializing track {track_index}...'
-        job['sub_progress'] = 0
-        job['current_thumbnail'] = thumbnail 
+        job.current_track = track_index
+        job.last_update = time.time()
+        job.current_status = f'Initializing track {track_index}...'
+        job.sub_progress = 0
+        job.current_thumbnail = thumbnail 
+        db.session.commit()
         
-        if job.get('cancelled'): return False
+        if job.status == 'cancelled': return False
 
         try:
             with YoutubeDL({'quiet':True, 'no_warnings':True, 'socket_timeout':10}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info.get('title'): track_name = info['title']
                 if info.get('uploader'): artist_name = info['uploader']
-                if info.get('thumbnail'): job['current_thumbnail'] = info['thumbnail']
+                if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
+                db.session.commit()
         except: pass
         
         with YoutubeDL(ydl_opts) as ydl:
@@ -443,9 +486,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
 
             clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
             
-            with lock:
-                with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                    z.write(file_to_zip, f"{clean_name}.mp3")
+            with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
+                z.write(file_to_zip, f"{clean_name}.mp3")
             
             if transcribe_audio:
                 raw_txt_path, raw_pdf_path = transcribe_audio_file(file_to_zip, job)
@@ -453,32 +495,38 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 if raw_txt_path:
                     html_path, summary_pdf_path, manual_html = generate_diy_manual(raw_txt_path, job)
                     
-                    with lock:
-                        with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                            if raw_pdf_path and os.path.exists(raw_pdf_path): z.write(raw_pdf_path, f"{clean_name}_raw_transcript.pdf")
-                            if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{clean_name}_summary.pdf")
+                    with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
+                        if raw_pdf_path and os.path.exists(raw_pdf_path): z.write(raw_pdf_path, f"{clean_name}_raw_transcript.pdf")
+                        if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{clean_name}_summary.pdf")
 
-                    if manual_html: job['email_summaries'] += f"<hr><h2>{clean_name}</h2>" + manual_html
+                    if manual_html: job.email_summaries = (job.email_summaries or "") + f"<hr><h2>{clean_name}</h2>" + manual_html
 
-            job['completed'] += 1
-            job['sub_progress'] = 100
-            job['completed_tracks'].append(clean_name)
+            job.completed += 1
+            job.sub_progress = 100
+            
+            completed_list = list(job.completed_tracks)
+            completed_list.append(clean_name)
+            job.completed_tracks = completed_list
+            db.session.commit()
+            
             return True
         else:
-            if not job.get('cancelled'):
-                job['skipped'] += 1
-                job['last_track_error'] = "Download finished, but no MP3 file was created."
-                job['failed_track_details'].append({
+            if job.status != 'cancelled':
+                job.skipped += 1
+                
+                failed_list = list(job.failed_track_details)
+                failed_list.append({
                     "track": track_name or f"Track {track_index}",
                     "reason": "Corrupted stream or missing audio track."
                 })
+                job.failed_track_details = failed_list
+                db.session.commit()
             return False
 
     except Exception as e:
-        if not job.get('cancelled'): 
-            job['skipped'] += 1
+        if job.status != 'cancelled': 
+            job.skipped += 1
             error_string = str(e)
-            job['last_track_error'] = error_string
             
             if "404" in error_string:
                 friendly_reason = "Private, deleted, or invalid track link."
@@ -489,10 +537,13 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             else:
                 friendly_reason = "Unsupported format or protected track."
 
-            job['failed_track_details'].append({
+            failed_list = list(job.failed_track_details)
+            failed_list.append({
                 "track": track_name or f"Track {track_index}",
                 "reason": friendly_reason
             })
+            job.failed_track_details = failed_list
+            db.session.commit()
         return False
         
     finally:
@@ -503,72 +554,77 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         except: pass
         cleanup_memory()
 
-def run_conversion_task(session_id, url, entries, user_email=None, start_time=None, end_time=None, transcribe_audio=False, user_id=None, payment_method=None):
-    global current_processing_session
-    current_processing_session = session_id
-    job = conversion_jobs[session_id]
-    session_dir = os.path.join(DOWNLOAD_FOLDER, session_id)
-    os.makedirs(session_dir, exist_ok=True)
-    zip_path = os.path.join(session_dir, "playlist_backup.zip")
-    zip_locks[session_id] = BoundedSemaphore(1)
-    ffmpeg_exe = 'ffmpeg_bin/ffmpeg' if os.path.exists('ffmpeg_bin/ffmpeg') else 'ffmpeg'
+def run_conversion_task(session_id):
+    with app.app_context():
+        job = ConversionJob.query.get(session_id)
+        if not job: return
+        
+        session_dir = os.path.join(DOWNLOAD_FOLDER, session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        zip_path = os.path.join(session_dir, "playlist_backup.zip")
+        ffmpeg_exe = 'ffmpeg_bin/ffmpeg' if os.path.exists('ffmpeg_bin/ffmpeg') else 'ffmpeg'
 
-    try:
-        job['status'] = 'processing'
-        for idx, t_url, t_title, t_artist, t_thumb in entries:
-            if job.get('cancelled'): break
-            process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, zip_locks[session_id], t_title, t_artist, t_thumb, start_time, end_time, transcribe_audio)
-
-        if not job.get('cancelled'):
-            if job['completed'] == 0:
-                job['status'] = 'error'
-                hidden_error = job.get('last_track_error', 'Unknown internal error.')
-                job['error'] = (
-                    "Failed to extract audio. "
-                    f"System Output: {hidden_error}"
-                )
-            else:
-                job['status'] = 'completed'
-                job['zip_ready'] = True
-                job['zip_path'] = f"/download/{session_id}/playlist_backup.zip"
+        try:
+            for idx, t_url, t_title, t_artist, t_thumb in job.entries:
+                # Refresh job status from DB before starting the next track
+                job = ConversionJob.query.get(session_id)
+                if job.status == 'cancelled': break
                 
+                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio)
 
-                if user_email: notify_user_complete(session_id, user_email, job['completed'], job.get('email_summaries', ''))
-        else:
-            job['status'] = 'cancelled'
-    except Exception as e:
-        job['status'] = 'error'
-        job['error'] = str(e)
-    finally:
-        if session_id in zip_locks: del zip_locks[session_id]
-        current_processing_session = None
-        
-        unused_tracks = job['total'] - job['completed']
-        refund_unused_credits(user_id, payment_method, unused_tracks, session_id)
-        
-        cleanup_memory()
+            job = ConversionJob.query.get(session_id)
+            if job.status != 'cancelled':
+                if job.completed == 0:
+                    job.status = 'error'
+                    job.error = "Failed to extract any audio. Track may be protected."
+                else:
+                    job.status = 'completed'
+                    job.zip_ready = True
+                    job.zip_path = f"/download/{session_id}/playlist_backup.zip"
+                    
+                    if job.user_email: notify_user_complete(session_id, job.user_email, job.completed, job.email_summaries)
+            db.session.commit()
+            
+        except Exception as e:
+            job = ConversionJob.query.get(session_id)
+            job.status = 'error'
+            job.error = str(e)
+            db.session.commit()
+        finally:
+            job = ConversionJob.query.get(session_id)
+            if job:
+                unused_tracks = job.total - job.completed
+                refund_unused_credits(job.user_id, job.payment_method, unused_tracks, session_id)
+            
+            cleanup_memory()
 
 def worker_loop():
     while True:
         try:
-            if conversion_queue:
-                task_data = conversion_queue.popleft()
-                sid = task_data['session_id']
-                job = conversion_jobs.get(sid, {})
-                
-                if job.get('cancelled'):
-                    job['status'] = 'cancelled'
-                    unused_tracks = job.get('total', 0) - job.get('completed', 0)
-                    refund_unused_credits(task_data.get('user_id'), task_data.get('payment_method'), unused_tracks, sid)
-                    continue
-                    
-                run_conversion_task(
-                    sid, task_data['url'], task_data['entries'], task_data.get('email'), 
-                    task_data.get('start_time'), task_data.get('end_time'), task_data.get('transcribe_audio'),
-                    task_data.get('user_id'), task_data.get('payment_method')
+            with app.app_context():
+                # Find the next job (Priority 1 first, then oldest)
+                query = ConversionJob.query.filter_by(status='queued').order_by(
+                    ConversionJob.priority.desc(), ConversionJob.created_at.asc()
                 )
-            else: time.sleep(1)
-        except: time.sleep(1)
+                
+                # Use skip_locked to avoid race conditions with multiple workers
+                if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
+                    query = query.with_for_update(skip_locked=True)
+                    
+                job = query.first()
+                
+                if job:
+                    job.status = 'processing'
+                    job.last_update = time.time()
+                    db.session.commit()
+                    
+                    session_id = job.id
+                    run_conversion_task(session_id)
+                else:
+                    time.sleep(1)
+        except Exception as e: 
+            logger.error(f"Worker queue error: {e}")
+            time.sleep(1)
 
 queue_worker = Thread(target=worker_loop, daemon=True)
 queue_worker.start()
@@ -617,9 +673,6 @@ def start_conversion():
                 "requires_payment": True
             }), 403
 
-        # Create the active job lock and save user deductions simultaneously
-        active_job = ActiveJob(id=session_id, user_id=user.id, payment_method=payment_method, tracks_locked=total_tracks)
-        db.session.add(active_job)
         
         # --- TRACK POPULAR URL ---
         playlist_title = info.get('title')
@@ -643,34 +696,25 @@ def start_conversion():
             db.session.add(popular_url)
         # -------------------------
         
-        db.session.commit()
+        queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
+        job_priority = 1 if payment_method == 'credits' else 0
 
-        conversion_jobs[session_id] = {
-            'status': 'queued', 'total': total_tracks, 'completed': 0, 'skipped': 0, 'current_track': 0, 
-            'completed_tracks': [], 'skipped_tracks': [], 'failed_track_details': [],
-            'cancelled': False, 'zip_ready': False, 'current_thumbnail': '', 
-            'last_update': time.time(), 'email_summaries': '', 'sub_progress': 0 
-        }
-        
-        new_task = {
-            'session_id': session_id, 'url': url, 'entries': valid_entries,
-            'email': user.email if not user.email.startswith('anon_') else None,
-            'user_id': user.id, 'payment_method': payment_method,
-            'start_time': data.get('start_time'), 'end_time': data.get('end_time'),
-            'transcribe_audio': data.get('transcribe_audio', False)
-        }
-        
-        if payment_method == 'credits':
-            insert_idx = len(conversion_queue)
-            for i, item in enumerate(conversion_queue):
-                if item.get('payment_method') != 'credits':
-                    insert_idx = i
-                    break
-            conversion_queue.insert(insert_idx, new_task)
-            queue_position = insert_idx + 1
-        else:
-            conversion_queue.append(new_task)
-            queue_position = len(conversion_queue)
+        new_job = ConversionJob(
+            id=session_id,
+            user_id=user.id,
+            payment_method=payment_method,
+            status='queued',
+            priority=job_priority,
+            total=total_tracks,
+            entries=valid_entries,
+            url=url,
+            user_email=user.email if not user.email.startswith('anon_') else None,
+            start_time=data.get('start_time'),
+            end_time=data.get('end_time'),
+            transcribe_audio=data.get('transcribe_audio', False)
+        )
+        db.session.add(new_job)
+        db.session.commit()
 
         return jsonify({
             "session_id": session_id, 
@@ -684,31 +728,35 @@ def start_conversion():
 
 @app.route('/status/<session_id>', methods=['GET'])
 def get_status(session_id):
-    job = conversion_jobs.get(session_id)
+    job = ConversionJob.query.get(session_id)
     if not job: return jsonify({"error": "Session not found"}), 404
     queue_pos, wait_seconds = 0, 0
-    if job['status'] == 'queued':
-        if current_processing_session and current_processing_session != session_id:
-            curr_job = conversion_jobs.get(current_processing_session)
-            if curr_job and curr_job['status'] == 'processing':
-                wait_seconds += (max(0, curr_job['total'] - curr_job['completed']) * AVG_TIME_PER_TRACK)
-        for idx, item in enumerate(conversion_queue):
-            if item['session_id'] == session_id: queue_pos = idx + 1; break
-            wait_seconds += (len(item['entries']) * AVG_TIME_PER_TRACK)
     
+    if job.status == 'queued':
+        # Count jobs ahead in the database queue
+        ahead_count = ConversionJob.query.filter(
+            ConversionJob.status == 'queued',
+            db.or_(
+                ConversionJob.priority > job.priority,
+                db.and_(ConversionJob.priority == job.priority, ConversionJob.created_at < job.created_at)
+            )
+        ).count()
+        queue_pos = ahead_count + 1
+        wait_seconds = ahead_count * AVG_TIME_PER_TRACK * 5 # Approx 5 tracks avg
+
     return jsonify({
-        "status": job['status'], 
-        "total": job['total'], 
-        "completed": job['completed'], 
-        "skipped": job['skipped'], 
-        "failed_details": job.get('failed_track_details', []),
-        "current_track": job['current_track'], 
-        "current_status": job.get('current_status', ''), 
-        "current_thumbnail": job.get('current_thumbnail', ''), 
-        "zip_ready": job.get('zip_ready', False),
-        "zip_path": job.get('zip_path', ''), 
-        "sub_progress": job.get('sub_progress', 0),
-        "error": job.get('error', ''), 
+        "status": job.status, 
+        "total": job.total, 
+        "completed": job.completed, 
+        "skipped": job.skipped, 
+        "failed_details": job.failed_track_details,
+        "current_track": job.current_track, 
+        "current_status": job.current_status, 
+        "current_thumbnail": job.current_thumbnail, 
+        "zip_ready": job.zip_ready,
+        "zip_path": job.zip_path, 
+        "sub_progress": job.sub_progress,
+        "error": job.error, 
         "queue_position": queue_pos, 
         "estimated_wait": math.ceil(wait_seconds / 60)
     }), 200
@@ -716,20 +764,15 @@ def get_status(session_id):
 @app.route('/cancel', methods=['POST'])
 def cancel_conversion():
     session_id = request.json.get('session_id')
-    if session_id in conversion_jobs:
-        job = conversion_jobs[session_id]
-        job['cancelled'] = True
-        if job['status'] == 'queued': job['status'] = 'cancelled'
+    job = ConversionJob.query.get(session_id)
+    if job:
+        job.status = 'cancelled'
         
-        try:
-            for item in list(conversion_queue):
-                if item['session_id'] == session_id: 
-                    conversion_queue.remove(item)
-                    unused_tracks = job['total'] - job['completed']
-                    refund_unused_credits(item.get('user_id'), item.get('payment_method'), unused_tracks, session_id)
-                    break
-        except: pass
-        
+        unused_tracks = job.total - job.completed
+        if unused_tracks > 0:
+            refund_unused_credits(job.user_id, job.payment_method, unused_tracks, session_id=None)
+            
+        db.session.commit()
         return jsonify({"status": "cancelling"}), 200
     return jsonify({"status": "not_found"}), 404
 
