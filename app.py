@@ -144,8 +144,8 @@ if S3_BUCKET:
         's3',
         aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION', 'auto'),
-            endpoint_url=os.environ.get('AWS_ENDPOINT_URL')
+        region_name=os.environ.get('AWS_REGION'),
+        endpoint_url=os.environ.get('AWS_ENDPOINT_URL')
     )
 
 def cleanup_memory(): gc.collect()
