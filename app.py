@@ -466,7 +466,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
         'socket_timeout': 30, 'retries': 5,
         'hls_prefer_native': True, 
-        'writethumbnail': False,
+        'writethumbnail': True,
         'progress_hooks': [progress_hook], 'cookiefile': None,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -474,6 +474,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         },
         'postprocessors': [
             {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'},
+            {'key': 'EmbedThumbnail'},
         ],
         'postprocessor_args': {
             'ffmpeg': [
@@ -520,26 +521,10 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             file_to_zip = mp3_files[0]
 
             try:
-                thumb_path = None
-                if thumbnail:
-                    try:
-                        thumb_path = os.path.join(session_dir, f"{temp_filename_base}_thumb.jpg")
-                        resp = requests.get(thumbnail, timeout=5)
-                        if resp.status_code == 200:
-                            with open(thumb_path, 'wb') as f:
-                                f.write(resp.content)
-                    except Exception:
-                        thumb_path = None
-
                 cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
                 
-                if thumb_path and os.path.exists(thumb_path):
-                    cmd.extend([
-                        '-i', thumb_path, '-map', '0:0', '-map', '1:0', '-c', 'copy',
-                        '-id3v2_version', '3', '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'
-                    ])
-                else:
-                    cmd.extend(['-map_metadata', '-1', '-c', 'copy'])
+                # -map 0 ensures the yt-dlp embedded thumbnail is copied over with the audio
+                cmd.extend(['-map', '0', '-c', 'copy'])
                     
                 cmd.extend(['-metadata', f'title={track_name}', '-metadata', f'artist={artist_name}', file_to_zip + '.tmp'])
                 
