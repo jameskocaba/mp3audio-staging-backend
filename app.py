@@ -520,13 +520,29 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             file_to_zip = mp3_files[0]
 
             try:
-                cmd = [
-                    ffmpeg_exe, '-y', '-i', file_to_zip, 
-                    '-map_metadata', '-1', 
-                    '-metadata', f'title={track_name}', 
-                    '-metadata', f'artist={artist_name}', 
-                    '-c', 'copy', file_to_zip + '.tmp'
-                ]
+                thumb_path = None
+                if thumbnail:
+                    try:
+                        thumb_path = os.path.join(session_dir, f"{temp_filename_base}_thumb.jpg")
+                        resp = requests.get(thumbnail, timeout=5)
+                        if resp.status_code == 200:
+                            with open(thumb_path, 'wb') as f:
+                                f.write(resp.content)
+                    except Exception:
+                        thumb_path = None
+
+                cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
+                
+                if thumb_path and os.path.exists(thumb_path):
+                    cmd.extend([
+                        '-i', thumb_path, '-map', '0:0', '-map', '1:0', '-c', 'copy',
+                        '-id3v2_version', '3', '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'
+                    ])
+                else:
+                    cmd.extend(['-map_metadata', '-1', '-c', 'copy'])
+                    
+                cmd.extend(['-metadata', f'title={track_name}', '-metadata', f'artist={artist_name}', file_to_zip + '.tmp'])
+                
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 if os.path.exists(file_to_zip + '.tmp'): 
                     os.replace(file_to_zip + '.tmp', file_to_zip)
