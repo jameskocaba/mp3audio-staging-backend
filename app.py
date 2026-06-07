@@ -42,8 +42,15 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # For production security, it's best to lock down CORS to your specific frontend URL.
 # This reads the URL from the same environment variable used for magic links.
+frontend_url = os.environ.get('FRONTEND_URL', 'https://mp3aud.io').rstrip('/')
+allowed_origins = [
+    frontend_url,
+    "https://www.mp3aud.io",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500"
+]
 CORS(app, supports_credentials=True, resources={
-    r"/*": { "origins": [os.environ.get('FRONTEND_URL', 'https://mp3aud.io')], "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"] }
+    r"/*": { "origins": allowed_origins, "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
 })
 
 db = SQLAlchemy(app)
