@@ -630,11 +630,9 @@ def run_conversion_task(session_id):
 
             job = ConversionJob.query.get(session_id)
             if job.status != 'cancelled':
-                if job.completed == 0:
-                    job.status = 'error'
-                    job.error = "Failed to extract any audio. Track may be protected."
-                else:
-                    job.status = 'completed'
+                job.status = 'completed'
+                
+                if job.completed > 0:
                     job.zip_ready = True
                     job.zip_path = f"/download/{session_id}/playlist_backup.zip"
                     
@@ -701,6 +699,10 @@ def start_conversion():
     url = raw_url.split('?')[0] if raw_url else ''
     session_id = data.get('session_id', str(uuid.uuid4()))
     if not url: return jsonify({"error": "No URL provided"}), 400
+    
+    playlist_title = 'Audio URL'
+    playlist_artist = ''
+    
     try:
         with YoutubeDL({'extract_flat': True, 'quiet': True, 'playlistend': MAX_SONGS, 'nocheckcertificate': True}) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -717,27 +719,6 @@ def start_conversion():
 
         if total_tracks == 0: return jsonify({"error": "No tracks found or supported."}), 400
         
-        payment_method = None
-        
-        # 1. If the playlist is 5 tracks or fewer, it's always free!
-        if total_tracks <= 5:
-            payment_method = 'free'
-            user.free_conversions_used += total_tracks
-            
-        # 2. If it's larger than 5 tracks, check if they have enough paid credits
-        elif user.paid_track_credits >= total_tracks:
-            user.paid_track_credits -= total_tracks
-            payment_method = 'credits'
-            
-        # 3. If it's larger than 5 tracks AND they don't have enough credits, prompt payment
-        else:
-            return jsonify({
-                "error": f"Playlists larger than 5 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
-                "requires_payment": True
-            }), 403
-
-        
-        # --- TRACK POPULAR URL ---
         playlist_title = info.get('title')
         if not playlist_title and entries:
             playlist_title = entries[0].get('title', 'Unknown Title')
@@ -745,49 +726,72 @@ def start_conversion():
         playlist_artist = info.get('uploader')
         if not playlist_artist and entries:
             playlist_artist = entries[0].get('uploader', 'Unknown Artist')
-
-        popular_url = PopularURL.query.filter_by(url=url).first()
-        if popular_url:
-            popular_url.conversion_count += 1
-            popular_url.last_converted = datetime.utcnow()
-        else:
-            popular_url = PopularURL(
-                url=url, 
-                title=playlist_title[:200] if playlist_title else 'Audio URL', 
-                artist=playlist_artist[:200] if playlist_artist else ''
-            )
-            db.session.add(popular_url)
-        # -------------------------
-        
-        queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
-        job_priority = 1 if payment_method == 'credits' else 0
-
-        new_job = ConversionJob(
-            id=session_id,
-            user_id=user.id,
-            payment_method=payment_method,
-            status='queued',
-            priority=job_priority,
-            total=total_tracks,
-            entries=valid_entries,
-            url=url,
-            user_email=user.email if not user.email.startswith('anon_') else None,
-            start_time=data.get('start_time'),
-            end_time=data.get('end_time'),
-            transcribe_audio=data.get('transcribe_audio', False)
-        )
-        db.session.add(new_job)
-        db.session.commit()
-
-        return jsonify({
-            "session_id": session_id, 
-            "total_tracks": total_tracks, 
-            "status": "queued", 
-            "queue_position": queue_position
-        }), 200
-        
+            
     except Exception as e:
-        return jsonify({"error": "This URL may be protected and unsupported."}), 400
+        valid_entries = [(1, url, "Unknown Track", "Unknown Artist", "")]
+        total_tracks = 1
+        
+    payment_method = None
+    
+    # 1. If the playlist is 5 tracks or fewer, it's always free!
+    if total_tracks <= 5:
+        payment_method = 'free'
+        user.free_conversions_used += total_tracks
+        
+    # 2. If it's larger than 5 tracks, check if they have enough paid credits
+    elif user.paid_track_credits >= total_tracks:
+        user.paid_track_credits -= total_tracks
+        payment_method = 'credits'
+        
+    # 3. If it's larger than 5 tracks AND they don't have enough credits, prompt payment
+    else:
+        return jsonify({
+            "error": f"Playlists larger than 5 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
+            "requires_payment": True
+        }), 403
+
+    
+    # --- TRACK POPULAR URL ---
+
+    popular_url = PopularURL.query.filter_by(url=url).first()
+    if popular_url:
+        popular_url.conversion_count += 1
+        popular_url.last_converted = datetime.utcnow()
+    else:
+        popular_url = PopularURL(
+            url=url, 
+            title=playlist_title[:200] if playlist_title else 'Audio URL', 
+            artist=playlist_artist[:200] if playlist_artist else ''
+        )
+        db.session.add(popular_url)
+    # -------------------------
+    
+    queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
+    job_priority = 1 if payment_method == 'credits' else 0
+
+    new_job = ConversionJob(
+        id=session_id,
+        user_id=user.id,
+        payment_method=payment_method,
+        status='queued',
+        priority=job_priority,
+        total=total_tracks,
+        entries=valid_entries,
+        url=url,
+        user_email=user.email if not user.email.startswith('anon_') else None,
+        start_time=data.get('start_time'),
+        end_time=data.get('end_time'),
+        transcribe_audio=data.get('transcribe_audio', False)
+    )
+    db.session.add(new_job)
+    db.session.commit()
+
+    return jsonify({
+        "session_id": session_id, 
+        "total_tracks": total_tracks, 
+        "status": "queued", 
+        "queue_position": queue_position
+    }), 200
 
 @app.route('/status/<session_id>', methods=['GET'])
 def get_status(session_id):
