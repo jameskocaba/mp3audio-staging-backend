@@ -733,20 +733,20 @@ def start_conversion():
         
     payment_method = None
     
-    # 1. If the playlist is 5 tracks or fewer, it's always free!
-    if total_tracks <= 5:
+    # 1. If the playlist is 10 tracks or fewer, it's always free!
+    if total_tracks <= 10:
         payment_method = 'free'
         user.free_conversions_used += total_tracks
         
-    # 2. If it's larger than 5 tracks, check if they have enough paid credits
+    # 2. If it's larger than 10 tracks, check if they have enough paid credits
     elif user.paid_track_credits >= total_tracks:
         user.paid_track_credits -= total_tracks
         payment_method = 'credits'
         
-    # 3. If it's larger than 5 tracks AND they don't have enough credits, prompt payment
+    # 3. If it's larger than 10 tracks AND they don't have enough credits, prompt payment
     else:
         return jsonify({
-            "error": f"Playlists larger than 5 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
+            "error": f"Playlists larger than 10 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
             "requires_payment": True
         }), 403
 
@@ -809,7 +809,7 @@ def get_status(session_id):
             )
         ).count()
         queue_pos = ahead_count + 1
-        wait_seconds = ahead_count * AVG_TIME_PER_TRACK * 5 # Approx 5 tracks avg
+        wait_seconds = ahead_count * AVG_TIME_PER_TRACK * 10 # Approx 10 tracks avg
 
     return jsonify({
         "status": job.status, 
