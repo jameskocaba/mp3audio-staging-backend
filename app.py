@@ -46,6 +46,7 @@ frontend_url = os.environ.get('FRONTEND_URL', 'https://mp3aud.io').rstrip('/')
 allowed_origins = [
     frontend_url,
     "https://www.mp3aud.io",
+    "https://mp3audio-staging-frontend.onrender.com",
     "http://localhost:3000",
     "http://127.0.0.1:5500"
 ]
