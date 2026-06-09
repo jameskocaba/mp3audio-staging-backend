@@ -4,6 +4,7 @@ from flask import Flask, request, send_file, jsonify, session, redirect, url_for
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from yt_dlp import YoutubeDL
 import json
@@ -115,6 +116,22 @@ def initialize_database():
         try:
             db.create_all()
             
+            # --- AUTO MIGRATION FOR NEW COLUMNS ---
+            # Adds missing columns to existing databases without requiring Alembic
+            try:
+                if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS increase_quality BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS organize_genre BOOLEAN DEFAULT FALSE'))
+                    db.session.commit()
+                else: # Fallback for local SQLite testing
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN increase_quality BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN organize_genre BOOLEAN DEFAULT FALSE'))
+                    except: pass
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Auto-migration skipped or failed: {e}")
+
             # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
             zombie_jobs = ConversionJob.query.filter(ConversionJob.status.in_(['queued', 'processing'])).all()
             if zombie_jobs:
