@@ -97,6 +97,8 @@ class ConversionJob(db.Model):
     start_time = db.Column(db.String(20), nullable=True)
     end_time = db.Column(db.String(20), nullable=True)
     transcribe_audio = db.Column(db.Boolean, default=False)
+    increase_quality = db.Column(db.Boolean, default=False)
+    organize_genre = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -441,7 +443,7 @@ def generate_diy_manual(transcript_text_path, job=None):
         logger.error(f"Manual generation failed: {e}")
         return None, None, None
 
-def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio):
+def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False):
     job = ConversionJob.query.get(session_id)
     if not job or job.status == 'cancelled': return False
 
@@ -501,6 +503,9 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             ffmpeg_args.extend(['-to', str(end_time)])
         ydl_opts['external_downloader_args'] = {'ffmpeg_i': ffmpeg_args}
 
+    is_local_file = url.startswith('local:')
+    local_path = url.replace('local:', '') if is_local_file else None
+
     try:
         job.current_track = track_index
         job.last_update = time.time()
@@ -511,21 +516,37 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         
         if job.status == 'cancelled': return False
 
-        try:
-            with YoutubeDL({'quiet':True, 'no_warnings':True, 'socket_timeout':10}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info.get('title'): track_name = info['title']
-                if info.get('uploader'): artist_name = info['uploader']
-                if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
-                db.session.commit()
-        except: pass
+        file_to_zip = None
         
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        mp3_files = glob.glob(os.path.join(session_dir, f"{temp_filename_base}*.mp3"))
-        if mp3_files:
-            file_to_zip = mp3_files[0]
+        if not is_local_file:
+            try:
+                with YoutubeDL({'quiet':True, 'no_warnings':True, 'socket_timeout':10}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info.get('title'): track_name = info['title']
+                    if info.get('uploader'): artist_name = info['uploader']
+                    if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
+                    db.session.commit()
+            except: pass
+            
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            
+            mp3_files = glob.glob(os.path.join(session_dir, f"{temp_filename_base}*.mp3"))
+            if mp3_files:
+                file_to_zip = mp3_files[0]
+        else:
+            file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
+            cmd = [ffmpeg_exe, '-y', '-i', local_path]
+            if increase_quality:
+                cmd.extend(['-b:a', '320k']) # Upsample/Increase bitrate
+            else:
+                cmd.extend(['-q:a', '2'])
+            cmd.append(file_to_zip)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if not os.path.exists(file_to_zip):
+                file_to_zip = None
+
+        if file_to_zip and os.path.exists(file_to_zip):
 
             try:
                 cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
@@ -540,10 +561,24 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     os.replace(file_to_zip + '.tmp', file_to_zip)
             except: pass
 
+            genre_folder = ""
+            if organize_genre:
+                try:
+                    ffprobe_exe = 'ffmpeg_bin/ffprobe' if os.path.exists('ffmpeg_bin/ffprobe') else 'ffprobe'
+                    probe_cmd = [ffprobe_exe, '-v', 'quiet', '-print_format', 'json', '-show_format', local_path if is_local_file else file_to_zip]
+                    probe_out = subprocess.check_output(probe_cmd)
+                    probe_data = json.loads(probe_out)
+                    genre = probe_data.get('format', {}).get('tags', {}).get('genre', '')
+                    if genre:
+                        clean_genre = "".join([c for c in genre if c.isalnum() or c in (' ', '-')]).strip()
+                        genre_folder = f"{clean_genre}/" if clean_genre else "Unknown Genre/"
+                except Exception as e:
+                    pass
+
             clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
             
             with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                z.write(file_to_zip, f"{clean_name}.mp3")
+                z.write(file_to_zip, f"{genre_folder}{clean_name}.mp3")
             
             if transcribe_audio:
                 raw_txt_path, raw_pdf_path = transcribe_audio_file(file_to_zip, job)
@@ -552,8 +587,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     html_path, summary_pdf_path, manual_html = generate_diy_manual(raw_txt_path, job)
                     
                     with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                        if raw_pdf_path and os.path.exists(raw_pdf_path): z.write(raw_pdf_path, f"{clean_name}_raw_transcript.pdf")
-                        if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{clean_name}_summary.pdf")
+                        if raw_pdf_path and os.path.exists(raw_pdf_path): z.write(raw_pdf_path, f"{genre_folder}{clean_name}_lyrics.pdf")
+                        if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{genre_folder}{clean_name}_summary.pdf")
 
                     if manual_html: job.email_summaries = (job.email_summaries or "") + f"<hr><h2>{clean_name}</h2>" + manual_html
 
@@ -564,6 +599,11 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             completed_list.append(clean_name)
             job.completed_tracks = completed_list
             db.session.commit()
+            
+            if is_local_file:
+                try:
+                    os.remove(local_path)
+                except: pass
             
             return True
         else:
@@ -626,7 +666,7 @@ def run_conversion_task(session_id):
                 job = ConversionJob.query.get(session_id)
                 if job.status == 'cancelled': break
                 
-                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio)
+                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre)
 
             job = ConversionJob.query.get(session_id)
             if job.status != 'cancelled':
@@ -690,6 +730,55 @@ def worker_loop():
 
 queue_worker = Thread(target=worker_loop, daemon=True)
 queue_worker.start()
+
+@app.route('/start_upload', methods=['POST'])
+def start_upload():
+    user = get_or_create_user()
+    session_id = request.form.get('session_id', str(uuid.uuid4()))
+    
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+        
+    uploaded_files = request.files.getlist('files')
+    if not uploaded_files or uploaded_files[0].filename == '':
+        return jsonify({"error": "No files selected"}), 400
+
+    total_tracks = len(uploaded_files)
+
+    payment_method = None
+    if total_tracks <= 10:
+        payment_method = 'free'
+        user.free_conversions_used += total_tracks
+    elif user.paid_track_credits >= total_tracks:
+        user.paid_track_credits -= total_tracks
+        payment_method = 'credits'
+    else:
+        return jsonify({
+            "error": f"Processing more than 10 tracks requires credits. You uploaded {total_tracks} tracks, but only have {user.paid_track_credits} credits.", 
+            "requires_payment": True
+        }), 403
+
+    session_dir = os.path.join(DOWNLOAD_FOLDER, session_id, 'uploads')
+    os.makedirs(session_dir, exist_ok=True)
+    
+    valid_entries = []
+    for i, file in enumerate(uploaded_files):
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(session_dir, filename)
+        file.save(file_path)
+        valid_entries.append((i+1, f"local:{file_path}", filename, "Unknown Artist", ""))
+
+    increase_quality = request.form.get('increase_quality') == 'true'
+    attach_lyrics = request.form.get('attach_lyrics') == 'true'
+    organize_genre = request.form.get('organize_genre') == 'true'
+
+    queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
+    job_priority = 1 if payment_method == 'credits' else 0
+
+    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre)
+    db.session.add(new_job)
+    db.session.commit()
+    return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
 
 @app.route('/start_conversion', methods=['POST'])
 def start_conversion():
