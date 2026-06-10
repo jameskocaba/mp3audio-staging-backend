@@ -523,6 +523,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
 
     is_local_file = url.startswith('local:')
     local_path = url.replace('local:', '') if is_local_file else None
+    original_ext = local_path.split('.')[-1].lower() if is_local_file and '.' in local_path else 'mp3'
 
     try:
         job.current_track = track_index
@@ -552,13 +553,19 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             mp3_files = glob.glob(os.path.join(session_dir, f"{temp_filename_base}*.mp3"))
             if mp3_files:
                 file_to_zip = mp3_files[0]
+                original_ext = 'mp3'
         else:
-            file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
-            cmd = [ffmpeg_exe, '-y', '-i', local_path]
             if increase_quality:
+                # If enhancing quality, standardize to high-fidelity mp3
+                original_ext = 'mp3'
+                file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
+                cmd = [ffmpeg_exe, '-y', '-i', local_path, '-vn']
                 cmd.extend(['-b:a', '320k']) # Upsample/Increase bitrate
             else:
-                cmd.extend(['-q:a', '2'])
+                # NEVER convert format unless requested: just strip video/art and copy raw audio
+                file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.{original_ext}")
+                cmd = [ffmpeg_exe, '-y', '-i', local_path, '-vn', '-c:a', 'copy']
+                
             cmd.append(file_to_zip)
             
             try:
@@ -573,14 +580,29 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 file_to_zip = None
 
         if file_to_zip and os.path.exists(file_to_zip):
-
+            
+            # 1. TRANSCRIBE (if requested) so we have lyrics to physically embed
+            lyrics_text = ""
+            raw_pdf_to_zip = None
+            if transcribe_audio:
+                raw_txt_path, raw_pdf_path = transcribe_audio_file(file_to_zip, job)
+                if raw_txt_path and os.path.exists(raw_txt_path):
+                    with open(raw_txt_path, 'r', encoding='utf-8') as f:
+                        lyrics_text = f.read()
+                raw_pdf_to_zip = raw_pdf_path
+                
+            # 2. METADATA PASS (Title, Artist, and Lyrics)
             try:
                 cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
-                
-                # -map 0 ensures the yt-dlp embedded thumbnail is copied over with the audio
                 cmd.extend(['-map', '0', '-c', 'copy'])
+                if track_name and track_name != "Unknown Track":
+                    cmd.extend(['-metadata', f'title={track_name}'])
+                if artist_name and artist_name != "Unknown Artist":
+                    cmd.extend(['-metadata', f'artist={artist_name}'])
+                if lyrics_text:
+                    cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
                     
-                cmd.extend(['-metadata', f'title={track_name}', '-metadata', f'artist={artist_name}', file_to_zip + '.tmp'])
+                cmd.append(file_to_zip + '.tmp')
                 
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 if os.path.exists(file_to_zip + '.tmp'): 
@@ -604,19 +626,18 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
             
             with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                z.write(file_to_zip, f"{genre_folder}{clean_name}.mp3")
+                z.write(file_to_zip, f"{genre_folder}{clean_name}.{original_ext}")
             
-            if transcribe_audio:
-                raw_txt_path, raw_pdf_path = transcribe_audio_file(file_to_zip, job)
-                
-                if raw_txt_path:
-                    html_path, summary_pdf_path, manual_html = generate_diy_manual(raw_txt_path, job)
-                    
-                    with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                        if raw_pdf_path and os.path.exists(raw_pdf_path): z.write(raw_pdf_path, f"{genre_folder}{clean_name}_lyrics.pdf")
+                if transcribe_audio:
+                    if not is_local_file:
+                        # Keep DIY Meeting Notes strictly for URL Downloads
+                        html_path, summary_pdf_path, manual_html = generate_diy_manual(raw_txt_path, job)
+                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{genre_folder}{clean_name}_transcript.pdf")
                         if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{genre_folder}{clean_name}_summary.pdf")
-
-                    if manual_html: job.email_summaries = (job.email_summaries or "") + f"<hr><h2>{clean_name}</h2>" + manual_html
+                        if manual_html: job.email_summaries = (job.email_summaries or "") + f"<hr><h2>{clean_name}</h2>" + manual_html
+                    else:
+                        # For file uploads, simply attach the raw lyrics PDF 
+                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{genre_folder}{clean_name}_lyrics.pdf")
 
             job.completed += 1
             job.sub_progress = 100
@@ -794,6 +815,10 @@ def start_upload():
     valid_entries = []
     for i, file in enumerate(uploaded_files):
         filename = secure_filename(file.filename)
+        if not filename:
+            # Failsafe if secure_filename strips all characters (e.g., emojis or foreign text)
+            filename = f"track_{i+1}_{int(time.time())}.mp3"
+            
         file_path = os.path.join(session_dir, filename)
         file.save(file_path)
         valid_entries.append((i+1, f"local:{file_path}", filename, "Unknown Artist", ""))
