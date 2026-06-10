@@ -560,7 +560,15 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             else:
                 cmd.extend(['-q:a', '2'])
             cmd.append(file_to_zip)
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            
+            try:
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"FFmpeg local processing failed for {local_path}: {e.stderr}")
+                err_lines = [line for line in (e.stderr or '').strip().split('\n') if line.strip()]
+                last_err = err_lines[-1] if err_lines else 'Unknown format or corrupted file'
+                raise Exception(f"FFmpeg processing failed: {last_err}")
+                
             if not os.path.exists(file_to_zip):
                 file_to_zip = None
 
@@ -638,6 +646,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             return False
 
     except Exception as e:
+        logger.error(f"Track processing error: {e}")
         if job.status != 'cancelled': 
             job.skipped += 1
             error_string = str(e)
@@ -646,6 +655,9 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 friendly_reason = "Private, deleted, or invalid track link."
             elif "403" in error_string:
                 friendly_reason = "Geo-blocked or access denied by platform."
+            elif "ffmpeg processing failed" in error_string.lower():
+                err_detail = error_string.split("FFmpeg processing failed:")[-1].strip()
+                friendly_reason = f"Unsupported or corrupted file. ({err_detail})"
             elif "ffmpeg" in error_string.lower():
                 friendly_reason = "Server audio processor (FFmpeg) missing."
             else:
