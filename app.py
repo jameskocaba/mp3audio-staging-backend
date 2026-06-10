@@ -522,7 +522,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
         ydl_opts['external_downloader_args'] = {'ffmpeg_i': ffmpeg_args}
 
     is_local_file = url.startswith('local:')
-    local_path = url.replace('local:', '') if is_local_file else None
+    local_path = url[6:] if is_local_file else None
     original_ext = local_path.split('.')[-1].lower() if is_local_file and '.' in local_path else 'mp3'
 
     try:
@@ -559,12 +559,12 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 # If enhancing quality, standardize to high-fidelity mp3
                 original_ext = 'mp3'
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
-                cmd = [ffmpeg_exe, '-y', '-i', local_path, '-vn']
+                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn']
                 cmd.extend(['-b:a', '320k']) # Upsample/Increase bitrate
             else:
                 # NEVER convert format unless requested: just strip video/art and copy raw audio
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.{original_ext}")
-                cmd = [ffmpeg_exe, '-y', '-i', local_path, '-vn', '-c:a', 'copy']
+                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn', '-c:a', 'copy']
                 
             cmd.append(file_to_zip)
             
@@ -613,7 +613,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             if organize_genre:
                 try:
                     ffprobe_exe = 'ffmpeg_bin/ffprobe' if os.path.exists('ffmpeg_bin/ffprobe') else 'ffprobe'
-                    probe_cmd = [ffprobe_exe, '-v', 'quiet', '-print_format', 'json', '-show_format', local_path if is_local_file else file_to_zip]
+                    probe_cmd = [ffprobe_exe, '-v', 'quiet', '-probesize', '50M', '-analyzeduration', '100M', '-print_format', 'json', '-show_format', local_path if is_local_file else file_to_zip]
                     probe_out = subprocess.check_output(probe_cmd)
                     probe_data = json.loads(probe_out)
                     genre = probe_data.get('format', {}).get('tags', {}).get('genre', '')
@@ -814,10 +814,13 @@ def start_upload():
     
     valid_entries = []
     for i, file in enumerate(uploaded_files):
-        filename = secure_filename(file.filename)
-        if not filename:
-            # Failsafe if secure_filename strips all characters (e.g., emojis or foreign text)
-            filename = f"track_{i+1}_{int(time.time())}.mp3"
+        original_name = file.filename
+        filename = secure_filename(original_name)
+        
+        # Ensure we always keep a proper extension and valid name
+        ext = original_name.split('.')[-1].lower() if '.' in original_name else 'mp3'
+        if not filename or filename == ext or filename.startswith('.'):
+            filename = f"track_{i+1}_{int(time.time())}.{ext}"
             
         file_path = os.path.join(session_dir, filename)
         file.save(file_path)
