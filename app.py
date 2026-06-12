@@ -60,6 +60,31 @@ CORS(app, supports_credentials=True, resources={
 db = SQLAlchemy(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 
+@app.after_request
+def ensure_cors_headers(response):
+    origin = request.headers.get('Origin')
+    if origin in allowed_origins:
+        if 'Access-Control-Allow-Origin' not in response.headers:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Admin-Secret'
+    return response
+
+# Global handler for OPTIONS requests to ensure preflight checks never fail with 404/405
+@app.route('/', defaults={'path': ''}, methods=['OPTIONS'])
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_global_options(path):
+    return jsonify({"status": "ok"}), 200
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return jsonify({'error': 'Not Found', 'message': 'The requested URL was not found on the server.'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal Server Error'}), 500
+
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
