@@ -41,10 +41,20 @@ if db_url.startswith("postgres://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Staging mode: Reflect ALL origins dynamically to ensure CORS never blocks a request.
-# (In production on the main site, we will lock this back down to just mp3aud.io)
+allowed_origins = [
+    "https://mp3aud.io",
+    "https://www.mp3aud.io",
+    "https://mp3audio-staging.onrender.com",
+    "https://mp3audio-staging-frontend.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+]
+
 CORS(app, supports_credentials=True, resources={
-    r"/*": { "origins": re.compile(r".*"), "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
+    r"/*": { "origins": allowed_origins, "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
 })
 
 db = SQLAlchemy(app)
