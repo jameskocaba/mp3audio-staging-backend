@@ -49,7 +49,11 @@ allowed_origins = [
     "https://www.mp3aud.io",
     "https://mp3audio-staging-frontend.onrender.com",
     "http://localhost:3000",
-    "http://127.0.0.1:5500"
+    "http://127.0.0.1:5500",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
 ]
 CORS(app, supports_credentials=True, resources={
     r"/*": { "origins": allowed_origins, "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
