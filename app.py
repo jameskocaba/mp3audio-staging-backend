@@ -1072,4 +1072,8 @@ def health(): return jsonify({"status": "ok"}), 200
 @app.route('/')
 def index(): return jsonify({"message": "Audio Processor API", "status": "active"}), 200
 
+@app.route('/api-version')
+def api_version():
+    return jsonify({"version": "v7_updated", "has_upload_route": True}), 200
+
 if __name__ == '__main__': app.run(debug=False, port=5000, threaded=True)
