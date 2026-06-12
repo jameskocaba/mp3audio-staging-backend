@@ -1,4 +1,4 @@
-import os, uuid, logging, glob, zipfile, certifi, gc, shutil, time, subprocess, math, tempfile, hmac, hashlib
+import os, uuid, logging, glob, zipfile, certifi, gc, shutil, time, subprocess, math, tempfile, hmac, hashlib, re
 from datetime import datetime, timedelta
 from flask import Flask, request, send_file, jsonify, session, redirect, url_for
 from werkzeug.utils import secure_filename
@@ -41,23 +41,10 @@ if db_url.startswith("postgres://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# For production security, it's best to lock down CORS to your specific frontend URL.
-# This reads the URL from the same environment variable used for magic links.
-frontend_url = os.environ.get('FRONTEND_URL', 'https://mp3aud.io').rstrip('/')
-allowed_origins = [
-    frontend_url,
-    "https://www.mp3aud.io",
-    "https://mp3audio-staging-frontend.onrender.com",
-    "https://mp3audio-staging.onrender.com",
-    "http://localhost:3000",
-    "http://127.0.0.1:5500",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]
+# Staging mode: Reflect ALL origins dynamically to ensure CORS never blocks a request.
+# (In production on the main site, we will lock this back down to just mp3aud.io)
 CORS(app, supports_credentials=True, resources={
-    r"/*": { "origins": allowed_origins, "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
+    r"/*": { "origins": re.compile(r".*"), "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Admin-Secret"] }
 })
 
 db = SQLAlchemy(app)
@@ -787,8 +774,9 @@ def worker_loop():
 queue_worker = Thread(target=worker_loop, daemon=True)
 queue_worker.start()
 
-@app.route('/start_upload', methods=['POST'])
-def start_upload():
+# Renamed to avoid adblockers that strictly block requests containing the word "upload"
+@app.route('/process_local_files', methods=['POST'])
+def process_local_files():
     user = get_or_create_user()
     session_id = request.form.get('session_id', str(uuid.uuid4()))
     
