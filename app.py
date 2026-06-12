@@ -48,6 +48,7 @@ allowed_origins = [
     frontend_url,
     "https://www.mp3aud.io",
     "https://mp3audio-staging-frontend.onrender.com",
+    "https://mp3audio-staging.onrender.com",
     "http://localhost:3000",
     "http://127.0.0.1:5500",
     "http://localhost:8000",
