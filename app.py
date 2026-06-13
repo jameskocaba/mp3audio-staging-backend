@@ -32,7 +32,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-prod')
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_SECURE'] = True
-
+ 
 # Render Postgres Compatibility Fix
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///mp3audio.db')
 if db_url.startswith("postgres://"):
@@ -166,10 +166,15 @@ def initialize_database():
                     user = User.query.get(z_job.user_id) if z_job.user_id else None
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
+                        cpt = 1
+                        if z_job.increase_quality: cpt += 1
+                        if z_job.organize_genre: cpt += 1
+                        if z_job.transcribe_audio: cpt += 10
+                        unused_credits = unused_tracks * cpt
                         if z_job.payment_method == 'credits':
-                            user.paid_track_credits += unused_tracks
-                        elif z_job.payment_method == 'free':
-                            user.free_conversions_used = max(0, user.free_conversions_used - unused_tracks)
+                            user.paid_track_credits += unused_credits
+                        elif z_job.payment_method in ['free', 'free_quota']:
+                            user.free_conversions_used = max(0, user.free_conversions_used - unused_credits)
                     z_job.status = 'error'
                     z_job.error = 'Job interrupted by server reboot.'
                 db.session.commit()
@@ -239,7 +244,11 @@ def cleanup_old_sessions():
             for job in stuck_jobs:
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
-                    refund_unused_credits(job.user_id, job.payment_method, unused_tracks)
+                    cpt = 1
+                    if job.increase_quality: cpt += 1
+                    if job.organize_genre: cpt += 1
+                    if job.transcribe_audio: cpt += 10
+                    refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt)
                 job.status = 'error'
                 job.error = 'Job timed out and was cancelled by the system.'
                 job.last_update = time.time() # Reset timer so it gets deleted in the next hourly sweep
@@ -279,16 +288,16 @@ def get_or_create_user():
     session['user_id'] = ghost_user.id
     return ghost_user
 
-def refund_unused_credits(user_id, payment_method, unused_tracks, session_id=None):
+def refund_unused_credits(user_id, payment_method, unused_credits, session_id=None):
     try:
         with app.app_context():
-            if unused_tracks > 0 and user_id and payment_method:
+            if unused_credits > 0 and user_id and payment_method:
                 user = User.query.get(user_id)
                 if user:
                     if payment_method == 'credits':
-                        user.paid_track_credits += unused_tracks
-                    elif payment_method == 'free':
-                        user.free_conversions_used = max(0, user.free_conversions_used - unused_tracks)
+                        user.paid_track_credits += unused_credits
+                    elif payment_method in ['free', 'free_quota']:
+                        user.free_conversions_used = max(0, user.free_conversions_used - unused_credits)
             db.session.commit()
     except Exception as e:
         logger.error(f"Failed to refund credits: {e}")
@@ -774,7 +783,11 @@ def run_conversion_task(session_id):
             job = ConversionJob.query.get(session_id)
             if job:
                 unused_tracks = job.total - job.completed
-                refund_unused_credits(job.user_id, job.payment_method, unused_tracks, session_id)
+                cpt = 1
+                if job.increase_quality: cpt += 1
+                if job.organize_genre: cpt += 1
+                if job.transcribe_audio: cpt += 10
+                refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id)
             
             cleanup_memory()
 
@@ -823,17 +836,33 @@ def process_local_files():
         return jsonify({"error": "No files selected"}), 400
 
     total_tracks = len(uploaded_files)
+    
+    increase_quality = request.form.get('increase_quality') == 'true'
+    attach_lyrics = request.form.get('attach_lyrics') == 'true'
+    organize_genre = request.form.get('organize_genre') == 'true'
+
+    credits_per_track = 1
+    if increase_quality: credits_per_track += 1
+    if organize_genre: credits_per_track += 1
+    if attach_lyrics: credits_per_track += 10
+    
+    total_credits_needed = total_tracks * credits_per_track
+    is_premium_job = attach_lyrics
+    FREE_CREDIT_ALLOWANCE = 50
+    payload_mb = request.content_length / (1024 * 1024) if request.content_length else 0
 
     payment_method = None
-    if total_tracks <= 10:
-        payment_method = 'free'
-        user.free_conversions_used += total_tracks
-    elif user.paid_track_credits >= total_tracks:
-        user.paid_track_credits -= total_tracks
+    if not is_premium_job and payload_mb <= 50 and total_tracks <= 10:
+        payment_method = 'always_free'
+    elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
+        user.free_conversions_used += total_credits_needed
+        payment_method = 'free_quota'
+    elif user.paid_track_credits >= total_credits_needed:
+        user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
         return jsonify({
-            "error": f"Processing more than 10 tracks requires credits. You uploaded {total_tracks} tracks, but only have {user.paid_track_credits} credits.", 
+            "error": f"Premium features require {total_credits_needed} credits. You have exhausted your free quota and only have {user.paid_track_credits} credits available.", 
             "requires_payment": True
         }), 403
 
@@ -853,10 +882,6 @@ def process_local_files():
         file_path = os.path.join(session_dir, filename)
         file.save(file_path)
         valid_entries.append((i+1, f"local:{file_path}", filename, "Unknown Artist", ""))
-
-    increase_quality = request.form.get('increase_quality') == 'true'
-    attach_lyrics = request.form.get('attach_lyrics') == 'true'
-    organize_genre = request.form.get('organize_genre') == 'true'
 
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
     job_priority = 1 if payment_method == 'credits' else 0
@@ -906,22 +931,39 @@ def start_conversion():
         valid_entries = [(1, url, "Unknown Track", "Unknown Artist", "")]
         total_tracks = 1
         
+    transcribe_audio = data.get('transcribe_audio', False)
+    increase_quality = data.get('increase_quality', False)
+    organize_genre = data.get('organize_genre', False)
+
+    credits_per_track = 1
+    if increase_quality: credits_per_track += 1
+    if organize_genre: credits_per_track += 1
+    if transcribe_audio: credits_per_track += 10
+    
+    total_credits_needed = total_tracks * credits_per_track
+    is_premium_job = transcribe_audio
+    FREE_CREDIT_ALLOWANCE = 50
+        
     payment_method = None
     
-    # 1. If the playlist is 10 tracks or fewer, it's always free!
-    if total_tracks <= 10:
-        payment_method = 'free'
-        user.free_conversions_used += total_tracks
+    # 1. ALWAYS FREE for basic, small playlists (Gets them hooked!)
+    if not is_premium_job and total_tracks <= 10:
+        payment_method = 'always_free'
         
-    # 2. If it's larger than 10 tracks, check if they have enough paid credits
-    elif user.paid_track_credits >= total_tracks:
-        user.paid_track_credits -= total_tracks
+    # 2. Use Lifetime Free Credits (for trying AI)
+    elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
+        user.free_conversions_used += total_credits_needed
+        payment_method = 'free_quota'
+        
+    # 3. Use Paid Credits
+    elif user.paid_track_credits >= total_credits_needed:
+        user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
         
-    # 3. If it's larger than 10 tracks AND they don't have enough credits, prompt payment
+    # 4. Deny access
     else:
         return jsonify({
-            "error": f"Playlists larger than 10 tracks require credits. This playlist has {total_tracks} tracks, but you only have {user.paid_track_credits} credits.", 
+            "error": f"Premium features require {total_credits_needed} credits. You have exhausted your free quota and only have {user.paid_track_credits} credits available.", 
             "requires_payment": True
         }), 403
 
@@ -956,7 +998,9 @@ def start_conversion():
         user_email=user.email if not user.email.startswith('anon_') else None,
         start_time=data.get('start_time'),
         end_time=data.get('end_time'),
-        transcribe_audio=data.get('transcribe_audio', False)
+        transcribe_audio=transcribe_audio,
+        increase_quality=increase_quality,
+        organize_genre=organize_genre
     )
     db.session.add(new_job)
     db.session.commit()
@@ -1012,7 +1056,11 @@ def cancel_conversion():
         
         unused_tracks = job.total - job.completed
         if unused_tracks > 0:
-            refund_unused_credits(job.user_id, job.payment_method, unused_tracks, session_id=None)
+            cpt = 1
+            if job.increase_quality: cpt += 1
+            if job.organize_genre: cpt += 1
+            if job.transcribe_audio: cpt += 10
+            refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id=None)
             
         db.session.commit()
         return jsonify({"status": "cancelling"}), 200
