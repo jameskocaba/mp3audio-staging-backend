@@ -207,6 +207,34 @@ if S3_BUCKET:
         endpoint_url=os.environ.get('AWS_ENDPOINT_URL')
     )
 
+def setup_s3_lifecycle():
+    """Configures Backblaze B2 / S3 to auto-delete files and old versions after 14 days."""
+    if s3_client and S3_BUCKET:
+        try:
+            s3_client.put_bucket_lifecycle_configuration(
+                Bucket=S3_BUCKET,
+                LifecycleConfiguration={
+                    'Rules': [
+                        {
+                            'ID': 'AutoDelete14Days',
+                            'Filter': {'Prefix': 'downloads/'},
+                            'Status': 'Enabled',
+                            # Deletes active files after 14 days (fallback if your 1-hour cleanup fails)
+                            'Expiration': {'Days': 14},
+                            # CRITICAL: Deletes hidden/old versions that Backblaze keeps by default
+                            'NoncurrentVersionExpiration': {'NoncurrentDays': 14},
+                            # Cleans up failed/stuck multipart uploads to save space
+                            'AbortIncompleteMultipartUpload': {'DaysAfterInitiation': 7}
+                        }
+                    ]
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Could not automatically apply S3 lifecycle rule: {e}")
+
+# Run the S3 lifecycle setup in the background on startup
+Thread(target=setup_s3_lifecycle, daemon=True).start()
+
 def cleanup_memory(): gc.collect()
 
 def cleanup_old_sessions():
