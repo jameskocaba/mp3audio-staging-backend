@@ -212,8 +212,8 @@ except: client = None
 
 MAX_SONGS = 350
 AVG_TIME_PER_TRACK = 45  
-PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3audio-staging.onrender.com')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3audio-staging-frontend.onrender.com')
+PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
 
 # --- AWS S3 Configuration ---
 S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
@@ -362,7 +362,7 @@ def send_magic_link():
         db.session.commit()
         
     token = serializer.dumps(email, salt='magic-link')
-    magic_url = f"{FRONTEND_URL}?token={token}"
+    magic_url = f"{FRONTEND_URL.rstrip('/')}/?token={token}"
     
     email_subject = "Secure Login - MP3aud.io"
     html = f"""
