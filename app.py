@@ -212,8 +212,8 @@ except: client = None
 
 MAX_SONGS = 350
 AVG_TIME_PER_TRACK = 45  
-PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
+PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3audio-staging.onrender.com')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3audio-staging-frontend.onrender.com')
 
 # --- AWS S3 Configuration ---
 S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
