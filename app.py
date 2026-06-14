@@ -9,6 +9,7 @@ from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from yt_dlp import YoutubeDL
 import json
 import requests
+import stripe
 import boto3
 from botocore.exceptions import ClientError
 
@@ -33,6 +34,8 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-i
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_SECURE'] = True
  
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+
 # Render Postgres Compatibility Fix
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///mp3audio.db')
 if db_url.startswith("postgres://"):
@@ -90,6 +93,8 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     free_conversions_used = db.Column(db.Integer, default=0)
     paid_track_credits = db.Column(db.Integer, default=0)
+    stripe_customer_id = db.Column(db.String(120), nullable=True)
+    subscription_active = db.Column(db.Boolean, default=False)
 
 class ConversionJob(db.Model):
     id = db.Column(db.String(120), primary_key=True)
@@ -154,6 +159,21 @@ def initialize_database():
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN increase_quality BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN organize_genre BOOLEAN DEFAULT FALSE'))
+                    except: pass
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Auto-migration skipped or failed: {e}")
+                
+            # Auto-migration for Stripe Subscription fields
+            try:
+                if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
+                    db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(120)'))
+                    db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS subscription_active BOOLEAN DEFAULT FALSE'))
+                    db.session.commit()
+                else:
+                    try: db.session.execute(text('ALTER TABLE user ADD COLUMN stripe_customer_id VARCHAR(120)'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE user ADD COLUMN subscription_active BOOLEAN DEFAULT FALSE'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
@@ -377,7 +397,8 @@ def get_current_user():
         "authenticated": not is_guest,
         "email": None if is_guest else user.email,
         "free_conversions_used": user.free_conversions_used,
-        "paid_track_credits": user.paid_track_credits
+        "paid_track_credits": user.paid_track_credits,
+        "subscription_active": getattr(user, 'subscription_active', False)
     })
 
 @app.route('/auth/logout', methods=['POST'])
@@ -385,49 +406,89 @@ def logout():
     session.pop('user_id', None)
     return jsonify({"success": True})
 
-@app.route('/buy-credits', methods=['POST'])
-def generate_invoice():
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
     user = get_or_create_user()
     if user.email.startswith('anon_'):
         return jsonify({"error": "Unauthorized. Please log in first."}), 401
-    payload = {
-        "price_amount": 5.00,
-        "price_currency": "usd",
-        "order_id": str(user.id), 
-        "order_description": "350 Track Conversions",
-        "ipn_callback_url": f"{PUBLIC_URL.rstrip('/')}/webhook/nowpayments"
-    }
-    try:
-        headers = {'x-api-key': os.environ.get('NOWPAYMENTS_API_KEY'), 'Content-Type': 'application/json'}
-        response = requests.post('https://api.nowpayments.io/v1/invoice', headers=headers, json=payload)
-        if response.status_code == 200: return jsonify({"invoice_url": response.json().get('invoice_url')})
-        return jsonify({"error": "Failed to connect to payment gateway."}), 500
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route('/webhook/nowpayments', methods=['POST'])
-def nowpayments_webhook():
-    secret_key = os.environ.get('NOWPAYMENTS_IPN_SECRET', '').encode('utf-8')
-    if request.headers.get('x-nowpayments-sig') != hmac.new(secret_key, request.get_data(), hashlib.sha512).hexdigest():
-        return jsonify({"error": "Invalid Signature"}), 403
         
-    data = request.json
+    data = request.json or {}
+    purchase_type = data.get('type', 'credits')
     
-    if data and data.get('payment_status') == 'finished':
-        try:
-            price_amount = float(data.get('price_amount', 0))
-            price_currency = data.get('price_currency', '').lower()
-            
-            if price_amount == 5.00 and price_currency == 'usd':
-                user = User.query.get(int(data.get('order_id')))
+    try:
+        if purchase_type == 'subscription':
+            session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price': os.environ.get('STRIPE_SUBSCRIPTION_PRICE_ID'), 
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                success_url=f"{FRONTEND_URL}/?success=true",
+                cancel_url=f"{FRONTEND_URL}/?canceled=true",
+                client_reference_id=str(user.id),
+                customer_email=user.email
+            )
+        else:
+            session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price': os.environ.get('STRIPE_CREDITS_PRICE_ID'), 
+                    'quantity': 1,
+                }],
+                mode='payment',
+                success_url=f"{FRONTEND_URL}/?success=true",
+                cancel_url=f"{FRONTEND_URL}/?canceled=true",
+                client_reference_id=str(user.id),
+                customer_email=user.email
+            )
+        return jsonify({"url": session.url})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/webhook/stripe', methods=['POST'])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get('Stripe-Signature')
+    endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
+    if not endpoint_secret:
+        return jsonify({'error': 'Webhook secret not configured'}), 400
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+    except ValueError as e:
+        return jsonify({'error': 'Invalid payload'}), 400
+    except stripe.error.SignatureVerificationError as e:
+        return jsonify({'error': 'Invalid signature'}), 400
+
+    if event['type'] == 'checkout.session.completed':
+        session_obj = event['data']['object']
+        user_id = session_obj.get('client_reference_id')
+        mode = session_obj.get('mode')
+        
+        if user_id:
+            try:
+                user = User.query.get(int(user_id))
                 if user:
-                    user.paid_track_credits += 350
+                    if mode == 'payment':
+                        user.paid_track_credits += 350
+                    elif mode == 'subscription':
+                        user.subscription_active = True
+                        user.stripe_customer_id = session_obj.get('customer')
                     db.session.commit()
-            else:
-                logger.warning(f"Payment amount mismatch: Expected $5.00 usd, got {price_amount} {price_currency} for order {data.get('order_id')}")
+            except Exception as e:
+                logger.error(f"Error processing webhook user update: {e}")
                 
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing payment amount: {e}")
-            
+    elif event['type'] == 'customer.subscription.deleted':
+        subscription = event['data']['object']
+        customer_id = subscription.get('customer')
+        if customer_id:
+            user = User.query.filter_by(stripe_customer_id=customer_id).first()
+            if user:
+                user.subscription_active = False
+                db.session.commit()
+
     return jsonify({"status": "OK"}), 200
 
 def notify_user_complete(session_id, user_email, track_count, html_summaries=""):
@@ -882,6 +943,8 @@ def process_local_files():
     payment_method = None
     if not is_premium_job and payload_mb <= 50 and total_tracks <= 10:
         payment_method = 'always_free'
+    elif getattr(user, 'subscription_active', False):
+        payment_method = 'subscription'
     elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
         user.free_conversions_used += total_credits_needed
         payment_method = 'free_quota'
@@ -978,7 +1041,11 @@ def start_conversion():
     if not is_premium_job and total_tracks <= 10:
         payment_method = 'always_free'
         
-    # 2. Use Lifetime Free Credits (for trying AI)
+    # 2. Monthly Subscription overrides usage limits
+    elif getattr(user, 'subscription_active', False):
+        payment_method = 'subscription'
+        
+    # 3. Use Lifetime Free Credits (for trying AI)
     elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
         user.free_conversions_used += total_credits_needed
         payment_method = 'free_quota'
