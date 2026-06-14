@@ -315,14 +315,21 @@ Thread(target=automated_cleanup_loop, daemon=True).start()
 
 def send_email_notification(recipient, subject, html_content):
     try:
-        resend.api_key = os.environ.get('RESEND_API_KEY')
+        resend_key = os.environ.get('RESEND_API_KEY')
+        if not resend_key:
+            logger.error("RESEND_API_KEY is not set. Cannot send email.")
+            return
+            
+        resend.api_key = resend_key
+        from_email = os.environ.get('FROM_EMAIL', 'onboarding@resend.dev')
         resend.Emails.send({
-            "from": f"MP3 Audio Tools <{os.environ.get('FROM_EMAIL')}>",
+            "from": f"MP3 Audio Tools <{from_email}>",
             "to": [recipient],
             "subject": subject,
             "html": html_content,
         })
-    except: pass
+    except Exception as e:
+        logger.error(f"Failed to send email to {recipient}: {e}")
 
 def get_or_create_user():
     if 'user_id' in session:
