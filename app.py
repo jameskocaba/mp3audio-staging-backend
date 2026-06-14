@@ -193,8 +193,6 @@ def initialize_database():
                         unused_credits = unused_tracks * cpt
                         if z_job.payment_method == 'credits':
                             user.paid_track_credits += unused_credits
-                        elif z_job.payment_method in ['free', 'free_quota']:
-                            user.free_conversions_used = max(0, user.free_conversions_used - unused_credits)
                     z_job.status = 'error'
                     z_job.error = 'Job interrupted by server reboot.'
                 db.session.commit()
@@ -355,8 +353,6 @@ def refund_unused_credits(user_id, payment_method, unused_credits, session_id=No
                 if user:
                     if payment_method == 'credits':
                         user.paid_track_credits += unused_credits
-                    elif payment_method in ['free', 'free_quota']:
-                        user.free_conversions_used = max(0, user.free_conversions_used - unused_credits)
             db.session.commit()
     except Exception as e:
         logger.error(f"Failed to refund credits: {e}")
@@ -950,8 +946,7 @@ def process_local_files():
     if attach_lyrics: credits_per_track += 10
     
     total_credits_needed = total_tracks * credits_per_track
-    is_premium_job = attach_lyrics
-    FREE_CREDIT_ALLOWANCE = 50
+    is_premium_job = attach_lyrics or increase_quality
     payload_mb = request.content_length / (1024 * 1024) if request.content_length else 0
 
     payment_method = None
@@ -959,15 +954,12 @@ def process_local_files():
         payment_method = 'always_free'
     elif getattr(user, 'subscription_active', False):
         payment_method = 'subscription'
-    elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
-        user.free_conversions_used += total_credits_needed
-        payment_method = 'free_quota'
     elif user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
         return jsonify({
-            "error": f"Premium features require {total_credits_needed} credits. You have exhausted your free quota and only have {user.paid_track_credits} credits available.", 
+            "error": f"This action requires {total_credits_needed} premium credits. Please sign in to purchase credits or subscribe.", 
             "requires_payment": True
         }), 403
 
@@ -1046,8 +1038,7 @@ def start_conversion():
     if transcribe_audio: credits_per_track += 10
     
     total_credits_needed = total_tracks * credits_per_track
-    is_premium_job = transcribe_audio
-    FREE_CREDIT_ALLOWANCE = 50
+    is_premium_job = transcribe_audio or increase_quality
         
     payment_method = None
     
@@ -1059,11 +1050,6 @@ def start_conversion():
     elif getattr(user, 'subscription_active', False):
         payment_method = 'subscription'
         
-    # 3. Use Lifetime Free Credits (for trying AI)
-    elif user.free_conversions_used + total_credits_needed <= FREE_CREDIT_ALLOWANCE:
-        user.free_conversions_used += total_credits_needed
-        payment_method = 'free_quota'
-        
     # 3. Use Paid Credits
     elif user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
@@ -1072,7 +1058,7 @@ def start_conversion():
     # 4. Deny access
     else:
         return jsonify({
-            "error": f"Premium features require {total_credits_needed} credits. You have exhausted your free quota and only have {user.paid_track_credits} credits available.", 
+            "error": f"This action requires {total_credits_needed} premium credits. Please sign in to purchase credits or subscribe.", 
             "requires_payment": True
         }), 403
 
