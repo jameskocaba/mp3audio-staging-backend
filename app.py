@@ -91,7 +91,6 @@ def internal_error(error):
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    free_conversions_used = db.Column(db.Integer, default=0)
     paid_track_credits = db.Column(db.Integer, default=0)
     stripe_customer_id = db.Column(db.String(120), nullable=True)
     subscription_active = db.Column(db.Boolean, default=False)
@@ -406,7 +405,6 @@ def get_current_user():
     return jsonify({
         "authenticated": not is_guest,
         "email": None if is_guest else user.email,
-        "free_conversions_used": user.free_conversions_used,
         "paid_track_credits": user.paid_track_credits,
         "subscription_active": getattr(user, 'subscription_active', False)
     })
