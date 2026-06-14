@@ -14,3 +14,4 @@ certifi
 pycryptodomex
 psycopg2-binary==2.9.9
 boto3==1.34.60
+stripe==5.5.0
