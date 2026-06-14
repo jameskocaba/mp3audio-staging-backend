@@ -177,6 +177,18 @@ def initialize_database():
             except Exception as e:
                 db.session.rollback()
                 logger.warning(f"Auto-migration skipped or failed: {e}")
+                
+            # Auto-migration to drop obsolete free_conversions_used column
+            try:
+                if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
+                    db.session.execute(text('ALTER TABLE "user" DROP COLUMN IF EXISTS free_conversions_used'))
+                    db.session.commit()
+                else:
+                    try: db.session.execute(text('ALTER TABLE user DROP COLUMN free_conversions_used'))
+                    except: pass
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"Drop column skipped or failed: {e}")
 
             # SYSTEM REBOOT RECOVERY: Refund credits for jobs interrupted by a sudden crash
             zombie_jobs = ConversionJob.query.filter(ConversionJob.status.in_(['queued', 'processing'])).all()
