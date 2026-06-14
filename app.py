@@ -314,22 +314,26 @@ def automated_cleanup_loop():
 Thread(target=automated_cleanup_loop, daemon=True).start()
 
 def send_email_notification(recipient, subject, html_content):
+    print(f"--- Attempting to send email to {recipient} ---", flush=True)
     try:
         resend_key = os.environ.get('RESEND_API_KEY')
         if not resend_key:
-            logger.error("RESEND_API_KEY is not set. Cannot send email.")
-            return
+            print("ERROR: RESEND_API_KEY is not set in environment variables.", flush=True)
+            return False
             
         resend.api_key = resend_key
         from_email = os.environ.get('FROM_EMAIL', 'onboarding@resend.dev')
-        resend.Emails.send({
+        response = resend.Emails.send({
             "from": f"MP3 Audio Tools <{from_email}>",
             "to": [recipient],
             "subject": subject,
             "html": html_content,
         })
+        print(f"SUCCESS: Email sent via Resend. Response: {response}", flush=True)
+        return True
     except Exception as e:
-        logger.error(f"Failed to send email to {recipient}: {e}")
+        print(f"RESEND API EXCEPTION: Failed to send email to {recipient}: {str(e)}", flush=True)
+        return False
 
 def get_or_create_user():
     if 'user_id' in session:
@@ -379,7 +383,10 @@ def send_magic_link():
         <a href="{magic_url}" style="background-color: #ea580c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px;">Log In Now</a>
         <p style="color: #b45309; font-size: 12px; margin-top: 25px; line-height: 1.4;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
     </div>"""
-    send_email_notification(email, email_subject, html)
+    success = send_email_notification(email, email_subject, html)
+    if not success:
+        return jsonify({"error": "Failed to send email. Provider blocked the request."}), 500
+        
     return jsonify({"success": True, "message": "Magic link sent to your email."})
 
 @app.route('/auth/verify', methods=['POST'])
