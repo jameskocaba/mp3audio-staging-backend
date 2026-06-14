@@ -384,11 +384,11 @@ def send_magic_link():
     
     email_subject = "Secure Login - MP3aud.io"
     html = f"""
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 30px; max-width: 600px; margin: 0 auto; border: 2px solid #fde68a; border-radius: 12px; background-color: #fffbeb;">
-        <h2 style="margin: 0 0 15px 0; color: #92400e; font-size: 22px; font-weight: 800;">Log In & Manage Credits</h2>
-        <p style="color: #92400e; font-size: 15px; margin-bottom: 24px; line-height: 1.5;">Click the button below to securely log in to your account. Once inside, you can purchase more credits or check your existing balance.</p>
-        <a href="{magic_url}" style="background-color: #ea580c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px;">Log In Now</a>
-        <p style="color: #b45309; font-size: 12px; margin-top: 25px; line-height: 1.4;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 30px; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-top: 4px solid #f59e0b; border-radius: 12px; background-color: #ffffff; box-shadow: 0 12px 30px rgba(0,0,0,0.05);">
+        <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px; font-weight: 800;">Log In & Manage Account</h2>
+        <p style="color: #475569; font-size: 15px; margin-bottom: 24px; line-height: 1.5;">Click the button below to securely log in to your account. Once inside, you can access your credits or manage your subscription.</p>
+        <a href="{magic_url}" style="background: linear-gradient(90deg, #f59e0b 0%, #4f46e5 100%); background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 10px rgba(139, 92, 246, 0.3);">Log In Securely</a>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 25px; line-height: 1.4;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
     </div>"""
     success = send_email_notification(email, email_subject, html)
     if not success:
