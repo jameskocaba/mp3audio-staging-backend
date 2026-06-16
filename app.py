@@ -669,6 +669,24 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
     is_local_file = url.startswith('local:')
     local_path = url[6:] if is_local_file else None
     original_ext = local_path.split('.')[-1].lower() if is_local_file and '.' in local_path else 'mp3'
+    
+    album_name = "Unknown Album"
+
+    # Extract metadata immediately for local files before doing anything else
+    if is_local_file:
+        try:
+            ffprobe_exe = 'ffmpeg_bin/ffprobe' if os.path.exists('ffmpeg_bin/ffprobe') else 'ffprobe'
+            probe_cmd = [ffprobe_exe, '-v', 'quiet', '-probesize', '50M', '-analyzeduration', '100M', '-print_format', 'json', '-show_format', local_path]
+            probe_out = subprocess.check_output(probe_cmd)
+            probe_data = json.loads(probe_out)
+            tags = probe_data.get('format', {}).get('tags', {})
+            tags_lower = {k.lower(): v for k, v in tags.items()}
+            
+            if tags_lower.get('artist'): artist_name = tags_lower.get('artist')
+            if tags_lower.get('album'): album_name = tags_lower.get('album')
+            if tags_lower.get('title'): track_name = tags_lower.get('title')
+        except Exception as e:
+            pass
 
     try:
         job.current_track = track_index
@@ -688,6 +706,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     info = ydl.extract_info(url, download=False)
                     if info.get('title'): track_name = info['title']
                     if info.get('uploader'): artist_name = info['uploader']
+                    if info.get('album'): album_name = info['album']
                     if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
                     db.session.commit()
             except: pass
@@ -744,6 +763,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     cmd.extend(['-metadata', f'title={track_name}'])
                 if artist_name and artist_name != "Unknown Artist":
                     cmd.extend(['-metadata', f'artist={artist_name}'])
+                if album_name and album_name != "Unknown Album":
+                    cmd.extend(['-metadata', f'album={album_name}'])
                 if lyrics_text:
                     cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
                     
@@ -754,35 +775,30 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     os.replace(file_to_zip + '.tmp', file_to_zip)
             except: pass
 
-            genre_folder = ""
+            folder_path = ""
             if organize_genre:
-                try:
-                    ffprobe_exe = 'ffmpeg_bin/ffprobe' if os.path.exists('ffmpeg_bin/ffprobe') else 'ffprobe'
-                    probe_cmd = [ffprobe_exe, '-v', 'quiet', '-probesize', '50M', '-analyzeduration', '100M', '-print_format', 'json', '-show_format', local_path if is_local_file else file_to_zip]
-                    probe_out = subprocess.check_output(probe_cmd)
-                    probe_data = json.loads(probe_out)
-                    genre = probe_data.get('format', {}).get('tags', {}).get('genre', '')
-                    if genre:
-                        clean_genre = "".join([c for c in genre if c.isalnum() or c in (' ', '-')]).strip()
-                        genre_folder = f"{clean_genre}/" if clean_genre else "Unknown Genre/"
-                except Exception as e:
-                    pass
+                clean_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-')]).strip() if artist_name and artist_name != "Unknown Artist" else "Unknown Artist"
+                clean_album = "".join([c for c in album_name if c.isalnum() or c in (' ', '-')]).strip() if album_name and album_name != "Unknown Album" else "Unknown Album"
+                folder_path = f"{clean_artist}/{clean_album}/"
 
-            clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
+            if folder_path:
+                clean_name = "".join([c for c in track_name[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
+            else:
+                clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
             
             with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
-                z.write(file_to_zip, f"{genre_folder}{clean_name}.{original_ext}")
+                z.write(file_to_zip, f"{folder_path}{clean_name}.{original_ext}")
             
                 if transcribe_audio:
                     if not is_local_file:
                         # Keep DIY Meeting Notes strictly for URL Downloads
                         html_path, summary_pdf_path, manual_html = generate_diy_manual(raw_txt_path, job)
-                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{genre_folder}{clean_name}_transcript.pdf")
-                        if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{genre_folder}{clean_name}_summary.pdf")
+                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{folder_path}{clean_name}_transcript.pdf")
+                        if summary_pdf_path and os.path.exists(summary_pdf_path): z.write(summary_pdf_path, f"{folder_path}{clean_name}_summary.pdf")
                         if manual_html: job.email_summaries = (job.email_summaries or "") + f"<hr><h2>{clean_name}</h2>" + manual_html
                     else:
                         # For file uploads, simply attach the raw lyrics PDF 
-                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{genre_folder}{clean_name}_lyrics.pdf")
+                        if raw_pdf_to_zip and os.path.exists(raw_pdf_to_zip): z.write(raw_pdf_to_zip, f"{folder_path}{clean_name}_lyrics.pdf")
 
             job.completed += 1
             job.sub_progress = 100
