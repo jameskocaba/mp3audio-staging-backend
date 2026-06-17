@@ -222,7 +222,9 @@ except: client = None
 MAX_SONGS = 350
 AVG_TIME_PER_TRACK = 45  
 PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://mp3aud.io')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'https://mp3aud.io').strip()
+if not FRONTEND_URL.startswith('http'):
+    FRONTEND_URL = 'https://' + FRONTEND_URL
 
 # --- AWS S3 Configuration ---
 S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
@@ -444,8 +446,8 @@ def create_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=f"{FRONTEND_URL}/?success=true",
-                cancel_url=f"{FRONTEND_URL}/?canceled=true",
+                success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
+                cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
                 client_reference_id=str(user.id),
                 customer_email=user.email
             )
@@ -457,8 +459,8 @@ def create_checkout_session():
                     'quantity': 1,
                 }],
                 mode='payment',
-                success_url=f"{FRONTEND_URL}/?success=true",
-                cancel_url=f"{FRONTEND_URL}/?canceled=true",
+                success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
+                cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
                 client_reference_id=str(user.id),
                 customer_email=user.email
             )
