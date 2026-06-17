@@ -43,6 +43,13 @@ if db_url.startswith("postgres://"):
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+if db_url.startswith("postgresql://"):
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_size': 10,
+        'max_overflow': 20,
+        'pool_timeout': 30,
+        'pool_recycle': 1800
+    }
 
 allowed_origins = [
     "https://mp3aud.io",
@@ -921,6 +928,7 @@ def run_conversion_task(session_id):
 def worker_loop():
     while True:
         try:
+            session_id = None
             with app.app_context():
                 # Find the next job (Priority 1 first, then oldest)
                 query = ConversionJob.query.filter_by(status='queued').order_by(
@@ -939,9 +947,11 @@ def worker_loop():
                     db.session.commit()
                     
                     session_id = job.id
-                    run_conversion_task(session_id)
-                else:
-                    time.sleep(1)
+                    
+            if session_id:
+                run_conversion_task(session_id)
+            else:
+                time.sleep(1)
         except Exception as e: 
             logger.error(f"Worker queue error: {e}")
             time.sleep(1)
