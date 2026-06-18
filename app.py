@@ -206,7 +206,6 @@ def initialize_database():
                     if user and unused_tracks > 0:
                         cpt = 1
                         if z_job.increase_quality: cpt += 1
-                        if z_job.organize_genre: cpt += 1
                         if z_job.transcribe_audio: cpt += 10
                         unused_credits = unused_tracks * cpt
                         if z_job.payment_method == 'credits':
@@ -312,7 +311,6 @@ def cleanup_old_sessions():
                 if unused_tracks > 0:
                     cpt = 1
                     if job.increase_quality: cpt += 1
-                    if job.organize_genre: cpt += 1
                     if job.transcribe_audio: cpt += 10
                     refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt)
                 job.status = 'error'
@@ -919,7 +917,6 @@ def run_conversion_task(session_id):
                 unused_tracks = job.total - job.completed
                 cpt = 1
                 if job.increase_quality: cpt += 1
-                if job.organize_genre: cpt += 1
                 if job.transcribe_audio: cpt += 10
                 refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id)
             
@@ -980,7 +977,6 @@ def process_local_files():
 
     credits_per_track = 1
     if increase_quality: credits_per_track += 1
-    if organize_genre: credits_per_track += 1
     if attach_lyrics: credits_per_track += 10
     
     total_credits_needed = total_tracks * credits_per_track
@@ -1072,7 +1068,6 @@ def start_conversion():
 
     credits_per_track = 1
     if increase_quality: credits_per_track += 1
-    if organize_genre: credits_per_track += 1
     if transcribe_audio: credits_per_track += 10
     
     total_credits_needed = total_tracks * credits_per_track
@@ -1191,7 +1186,6 @@ def cancel_conversion():
         if unused_tracks > 0:
             cpt = 1
             if job.increase_quality: cpt += 1
-            if job.organize_genre: cpt += 1
             if job.transcribe_audio: cpt += 10
             refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id=None)
             
