@@ -26,6 +26,11 @@ from xhtml2pdf import pisa
 
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+# Add ffmpeg_bin directory to PATH so pyacoustid and other subprocesses can find it
+ffmpeg_bin_dir = os.path.join(os.getcwd(), 'ffmpeg_bin')
+os.environ["PATH"] = ffmpeg_bin_dir + os.path.pathsep + os.environ.get("PATH", "")
+
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -139,6 +144,7 @@ class ConversionJob(db.Model):
     transcribe_audio = db.Column(db.Boolean, default=False)
     increase_quality = db.Column(db.Boolean, default=False)
     organize_genre = db.Column(db.Boolean, default=False)
+    auto_add_album_art = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -160,11 +166,14 @@ def initialize_database():
                 if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS increase_quality BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS organize_genre BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS auto_add_album_art BOOLEAN DEFAULT FALSE'))
                     db.session.commit()
                 else: # Fallback for local SQLite testing
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN increase_quality BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN organize_genre BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN auto_add_album_art BOOLEAN DEFAULT FALSE'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
@@ -207,7 +216,15 @@ def initialize_database():
                         cpt = 1
                         if z_job.increase_quality: cpt += 1
                         if z_job.transcribe_audio: cpt += 10
-                        unused_credits = unused_tracks * cpt
+                        
+                        is_premium = z_job.transcribe_audio or z_job.increase_quality
+                        if not is_premium:
+                            total_paid = max(0, z_job.total - 5) * cpt
+                            used_spent = max(0, z_job.completed - 5) * cpt
+                        else:
+                            total_paid = z_job.total * cpt
+                            used_spent = z_job.completed * cpt
+                        unused_credits = max(0, total_paid - used_spent)
                         if z_job.payment_method == 'credits':
                             user.paid_track_credits += unused_credits
                     z_job.status = 'error'
@@ -613,7 +630,112 @@ def generate_diy_manual(transcript_text_path, job=None):
         logger.error(f"Manual generation failed: {e}")
         return None, None, None
 
-def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False):
+def resolve_track_metadata(file_path, original_title, original_artist):
+    """Resolves track title and artist using existing tags, filename parsing, and audio fingerprinting."""
+    title = original_title
+    artist = original_artist
+    album = "Unknown Album"
+    
+    # Step 1: Read existing metadata tags using ffprobe (non-intrusive metadata check)
+    try:
+        ffprobe_exe = 'ffmpeg_bin/ffprobe' if os.path.exists('ffmpeg_bin/ffprobe') else 'ffprobe'
+        probe_cmd = [ffprobe_exe, '-v', 'quiet', '-probesize', '50M', '-analyzeduration', '100M', '-print_format', 'json', '-show_format', file_path]
+        probe_out = subprocess.check_output(probe_cmd)
+        probe_data = json.loads(probe_out)
+        tags = probe_data.get('format', {}).get('tags', {})
+        tags_lower = {k.lower(): v for k, v in tags.items()}
+        
+        if tags_lower.get('title'):
+            title = tags_lower.get('title')
+        if tags_lower.get('artist'):
+            artist = tags_lower.get('artist')
+        if tags_lower.get('album'):
+            album = tags_lower.get('album')
+    except Exception:
+        pass
+        
+    # Step 2: Fall back to filename parsing if title/artist is generic or missing
+    is_generic = not title or title.lower() in ["unknown track", "audio", "track", "sound", "download", "unnamed"]
+    if is_generic or not artist or artist.lower() == "unknown artist":
+        filename = os.path.splitext(os.path.basename(file_path))[0]
+        # Skip generic filename words
+        if filename.lower() not in ["audio", "track", "sound", "download", "unnamed"]:
+            if " - " in filename:
+                parts = filename.split(" - ", 1)
+                artist = parts[0].replace('_', ' ').strip()
+                title = parts[1].replace('_', ' ').strip()
+            else:
+                title = filename.replace('_', ' ').strip()
+
+    # Step 3: Fall back to AcoustID/Chromaprint audio fingerprinting if it's still generic
+    is_still_generic = not title or title.lower() in ["unknown track", "audio", "track", "sound", "download", "unnamed"]
+    acoustid_api_key = os.environ.get("ACOUSTID_API_KEY")
+    if is_still_generic and acoustid_api_key:
+        try:
+            import acoustid
+            results = acoustid.match(acoustid_api_key, file_path)
+            for score, recording_id, r_title, r_artist in results:
+                if score > 0.6:  # 60% confidence threshold
+                    title = r_title
+                    artist = r_artist
+                    break
+        except Exception as e:
+            logger.warning(f"AcoustID audio fingerprinting lookup failed: {e}")
+            
+    return title, artist, album
+
+def fetch_album_art_from_itunes(track_title, artist_name=None):
+    """Queries iTunes Search API for album artwork URL, returning updated metadata and high-res cover URL."""
+    try:
+        query = f"{track_title}"
+        if artist_name and artist_name != "Unknown Artist":
+            query = f"{artist_name} {track_title}"
+            
+        url = "https://itunes.apple.com/search"
+        params = {
+            "term": query,
+            "media": "music",
+            "entity": "song",
+            "limit": 1
+        }
+        response = requests.get(url, params=params, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            if results:
+                result = results[0]
+                artwork_url = result.get("artworkUrl100", "")
+                if artwork_url:
+                    # Upgrade the resolution from 100x100 to 1000x1000
+                    high_res_url = artwork_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                    return {
+                        "artwork_url": high_res_url,
+                        "track_name": result.get("trackName", track_title),
+                        "artist_name": result.get("artistName", artist_name),
+                        "album_name": result.get("collectionName", "Unknown Album")
+                    }
+    except Exception as e:
+        logger.warning(f"iTunes Search API lookup failed: {e}")
+    return None
+
+def download_image(url, temp_dir):
+    """Downloads an image file from a URL to a temporary local file."""
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            ext = 'jpg'
+            content_type = response.headers.get('Content-Type', '')
+            if 'png' in content_type:
+                ext = 'png'
+            temp_img_path = os.path.join(temp_dir, f"cover_{uuid.uuid4().hex[:8]}.{ext}")
+            with open(temp_img_path, 'wb') as f:
+                f.write(response.content)
+            return temp_img_path
+    except Exception as e:
+        logger.warning(f"Failed to download artwork from {url}: {e}")
+    return None
+
+def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False, auto_add_album_art=False):
     job = ConversionJob.query.get(session_id)
     if not job or job.status == 'cancelled': return False
 
@@ -752,6 +874,32 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
 
         if file_to_zip and os.path.exists(file_to_zip):
             
+            # Resolve track metadata if auto_add_album_art is requested, or if metadata is unknown
+            cover_path = None
+            if auto_add_album_art:
+                resolved_title, resolved_artist, resolved_album = resolve_track_metadata(file_to_zip, track_name, artist_name)
+                
+                # Fetch artwork and full track info from iTunes Search API
+                itunes_info = fetch_album_art_from_itunes(resolved_title, resolved_artist)
+                if itunes_info:
+                    track_name = itunes_info["track_name"]
+                    artist_name = itunes_info["artist_name"]
+                    album_name = itunes_info["album_name"]
+                    
+                    # Download cover artwork to embed it
+                    cover_path = download_image(itunes_info["artwork_url"], session_dir)
+                    if cover_path:
+                        # Update current thumbnail to show the fetched album art in the progress bar
+                        thumbnail = itunes_info["artwork_url"]
+                        if job:
+                            job.current_thumbnail = thumbnail
+                            db.session.commit()
+                else:
+                    # Fall back to using cleaner resolved title/artist
+                    track_name = resolved_title
+                    artist_name = resolved_artist
+                    album_name = resolved_album
+
             # 1. TRANSCRIBE (if requested) so we have lyrics to physically embed
             lyrics_text = ""
             raw_pdf_to_zip = None
@@ -762,10 +910,17 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                         lyrics_text = f.read()
                 raw_pdf_to_zip = raw_pdf_path
                 
-            # 2. METADATA PASS (Title, Artist, and Lyrics)
+            # 2. METADATA PASS (Title, Artist, and Lyrics) & Cover Art Embedding
             try:
-                cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
-                cmd.extend(['-map', '0', '-c', 'copy'])
+                if cover_path and os.path.exists(cover_path):
+                    # Embed cover art and copy audio stream
+                    cmd = [ffmpeg_exe, '-y', '-i', file_to_zip, '-i', cover_path]
+                    cmd.extend(['-map', '0:0', '-map', '1:0', '-c', 'copy', '-id3v2_version', '3'])
+                    cmd.extend(['-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'])
+                else:
+                    cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
+                    cmd.extend(['-map', '0', '-c', 'copy'])
+                    
                 if track_name and track_name != "Unknown Track":
                     cmd.extend(['-metadata', f'title={track_name}'])
                 if artist_name and artist_name != "Unknown Artist":
@@ -777,10 +932,34 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     
                 cmd.append(file_to_zip + '.tmp')
                 
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
                 if os.path.exists(file_to_zip + '.tmp'): 
                     os.replace(file_to_zip + '.tmp', file_to_zip)
-            except: pass
+            except Exception as e:
+                logger.warning(f"Embedding failed or map failed, falling back to standard copy: {e}")
+                try:
+                    # Fallback copy command without video mapping if it failed (e.g. for unsupported formats)
+                    fallback_cmd = [ffmpeg_exe, '-y', '-i', file_to_zip, '-map', '0', '-c', 'copy']
+                    if track_name and track_name != "Unknown Track":
+                        fallback_cmd.extend(['-metadata', f'title={track_name}'])
+                    if artist_name and artist_name != "Unknown Artist":
+                        fallback_cmd.extend(['-metadata', f'artist={artist_name}'])
+                    if album_name and album_name != "Unknown Album":
+                        fallback_cmd.extend(['-metadata', f'album={album_name}'])
+                    if lyrics_text:
+                        fallback_cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
+                    fallback_cmd.append(file_to_zip + '.tmp')
+                    subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    if os.path.exists(file_to_zip + '.tmp'):
+                        os.replace(file_to_zip + '.tmp', file_to_zip)
+                except Exception:
+                    pass
+            finally:
+                if cover_path and os.path.exists(cover_path):
+                    try:
+                        os.remove(cover_path)
+                    except:
+                        pass
 
             folder_path = ""
             if organize_genre:
@@ -885,7 +1064,7 @@ def run_conversion_task(session_id):
                 job = ConversionJob.query.get(session_id)
                 if job.status == 'cancelled': break
                 
-                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre)
+                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre, job.auto_add_album_art)
 
             job = ConversionJob.query.get(session_id)
             if job.status != 'cancelled':
@@ -913,12 +1092,21 @@ def run_conversion_task(session_id):
             db.session.commit()
         finally:
             job = ConversionJob.query.get(session_id)
-            if job:
-                unused_tracks = job.total - job.completed
+            if job and job.payment_method == 'credits':
                 cpt = 1
                 if job.increase_quality: cpt += 1
                 if job.transcribe_audio: cpt += 10
-                refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id)
+                
+                is_premium = job.transcribe_audio or job.increase_quality
+                if not is_premium:
+                    total_paid = max(0, job.total - 5) * cpt
+                    used_spent = max(0, job.completed - 5) * cpt
+                else:
+                    total_paid = job.total * cpt
+                    used_spent = job.completed * cpt
+                
+                refund_credits = max(0, total_paid - used_spent)
+                refund_unused_credits(job.user_id, job.payment_method, refund_credits, session_id)
             
             cleanup_memory()
 
@@ -974,17 +1162,23 @@ def process_local_files():
     increase_quality = request.form.get('increase_quality') == 'true'
     attach_lyrics = request.form.get('attach_lyrics') == 'true'
     organize_genre = request.form.get('organize_genre') == 'true'
+    auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
 
     credits_per_track = 1
     if increase_quality: credits_per_track += 1
     if attach_lyrics: credits_per_track += 10
     
-    total_credits_needed = total_tracks * credits_per_track
     is_premium_job = attach_lyrics or increase_quality
+    
+    if not is_premium_job:
+        total_credits_needed = max(0, total_tracks - 5) * credits_per_track
+    else:
+        total_credits_needed = total_tracks * credits_per_track
+        
     payload_mb = request.content_length / (1024 * 1024) if request.content_length else 0
 
     payment_method = None
-    if not is_premium_job and payload_mb <= 50 and total_tracks <= 10:
+    if not is_premium_job and payload_mb <= 50 and total_tracks <= 5:
         payment_method = 'always_free'
     elif getattr(user, 'subscription_active', False):
         payment_method = 'subscription'
@@ -1017,7 +1211,7 @@ def process_local_files():
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
     job_priority = 1 if payment_method == 'credits' else 0
 
-    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre)
+    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art)
     db.session.add(new_job)
     db.session.commit()
     return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
@@ -1065,18 +1259,23 @@ def start_conversion():
     transcribe_audio = data.get('transcribe_audio', False)
     increase_quality = data.get('increase_quality', False)
     organize_genre = data.get('organize_genre', False)
+    auto_add_album_art = data.get('auto_add_album_art', False)
 
     credits_per_track = 1
     if increase_quality: credits_per_track += 1
     if transcribe_audio: credits_per_track += 10
     
-    total_credits_needed = total_tracks * credits_per_track
     is_premium_job = transcribe_audio or increase_quality
+    
+    if not is_premium_job:
+        total_credits_needed = max(0, total_tracks - 5) * credits_per_track
+    else:
+        total_credits_needed = total_tracks * credits_per_track
         
     payment_method = None
     
-    # 1. ALWAYS FREE for basic, small playlists (Gets them hooked!)
-    if not is_premium_job and total_tracks <= 10:
+    # 1. ALWAYS FREE for basic, small playlists (up to 5 tracks)
+    if not is_premium_job and total_tracks <= 5:
         payment_method = 'always_free'
         
     # 2. Monthly Subscription overrides usage limits
@@ -1128,7 +1327,8 @@ def start_conversion():
         end_time=data.get('end_time'),
         transcribe_audio=transcribe_audio,
         increase_quality=increase_quality,
-        organize_genre=organize_genre
+        organize_genre=organize_genre,
+        auto_add_album_art=auto_add_album_art
     )
     db.session.add(new_job)
     db.session.commit()

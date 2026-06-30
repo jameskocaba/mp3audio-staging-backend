@@ -25,11 +25,15 @@ cd ffmpeg_bin
 wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O ffmpeg.tar.xz
 tar xf ffmpeg.tar.xz --strip-components=1
 
-# CRITICAL: Permissions so the app can actually run the binary files
-chmod +x ffmpeg ffprobe
+# 4b. Download and extract AcoustID Chromaprint fpcalc binary
+wget https://github.com/acoustid/chromaprint/releases/download/v1.6.0/chromaprint-fpcalc-1.6.0-linux-x86_64.tar.gz -O fpcalc.tar.gz
+tar xf fpcalc.tar.gz --strip-components=1
 
-# Clean up the compressed file to save space
+# CRITICAL: Permissions so the app can actually run the binary files
+chmod +x ffmpeg ffprobe fpcalc
+
+# Clean up the compressed files to save space
 cd ..
-rm ffmpeg_bin/ffmpeg.tar.xz
+rm -f ffmpeg_bin/ffmpeg.tar.xz ffmpeg_bin/fpcalc.tar.gz
 
 echo "Build successful with SSL fix, FFmpeg setup, and bleeding-edge yt-dlp!"
