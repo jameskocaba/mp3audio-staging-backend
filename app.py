@@ -910,13 +910,19 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                         lyrics_text = f.read()
                 raw_pdf_to_zip = raw_pdf_path
                 
+            # Get original extension to avoid format detection failure with .tmp extension
+            original_ext = file_to_zip.split('.')[-1].lower()
+            temp_output = file_to_zip + '.tmp.' + original_ext
+
             # 2. METADATA PASS (Title, Artist, and Lyrics) & Cover Art Embedding
             try:
                 if cover_path and os.path.exists(cover_path):
                     # Embed cover art and copy audio stream
                     cmd = [ffmpeg_exe, '-y', '-i', file_to_zip, '-i', cover_path]
-                    cmd.extend(['-map', '0:0', '-map', '1:0', '-c', 'copy', '-id3v2_version', '3'])
-                    cmd.extend(['-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'])
+                    # Map the audio stream from input 0 and the image stream from input 1
+                    cmd.extend(['-map', '0:a', '-map', '1:0', '-c', 'copy', '-disposition:v:0', 'attached_pic'])
+                    if original_ext == 'mp3':
+                        cmd.extend(['-id3v2_version', '3', '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'])
                 else:
                     cmd = [ffmpeg_exe, '-y', '-i', file_to_zip]
                     cmd.extend(['-map', '0', '-c', 'copy'])
@@ -930,13 +936,17 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 if lyrics_text:
                     cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
                     
-                cmd.append(file_to_zip + '.tmp')
+                cmd.append(temp_output)
                 
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                if os.path.exists(file_to_zip + '.tmp'): 
-                    os.replace(file_to_zip + '.tmp', file_to_zip)
+                # Capture stderr for better error reporting on exception
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+                if os.path.exists(temp_output): 
+                    os.replace(temp_output, file_to_zip)
             except Exception as e:
-                logger.warning(f"Embedding failed or map failed, falling back to standard copy: {e}")
+                err_msg = getattr(e, 'stderr', str(e))
+                if isinstance(err_msg, bytes):
+                    err_msg = err_msg.decode('utf-8', errors='ignore')
+                logger.warning(f"Embedding failed or map failed, falling back to standard copy. Error: {err_msg}")
                 try:
                     # Fallback copy command without video mapping if it failed (e.g. for unsupported formats)
                     fallback_cmd = [ffmpeg_exe, '-y', '-i', file_to_zip, '-map', '0', '-c', 'copy']
@@ -948,10 +958,10 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                         fallback_cmd.extend(['-metadata', f'album={album_name}'])
                     if lyrics_text:
                         fallback_cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
-                    fallback_cmd.append(file_to_zip + '.tmp')
+                    fallback_cmd.append(temp_output)
                     subprocess.run(fallback_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                    if os.path.exists(file_to_zip + '.tmp'):
-                        os.replace(file_to_zip + '.tmp', file_to_zip)
+                    if os.path.exists(temp_output):
+                        os.replace(temp_output, file_to_zip)
                 except Exception:
                     pass
             finally:
