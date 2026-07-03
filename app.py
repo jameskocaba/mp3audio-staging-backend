@@ -234,8 +234,8 @@ def initialize_database():
         except Exception as e:
             logger.error(f"Database initialization delayed or failed: {e}")
 
-# Trigger DB setup safely without blocking Gunicorn
-Thread(target=initialize_database, daemon=True).start()
+# Trigger DB setup synchronously so that schema changes are applied before accepting requests
+initialize_database()
 
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
