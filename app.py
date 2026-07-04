@@ -213,7 +213,7 @@ def initialize_database():
                     user = User.query.get(z_job.user_id) if z_job.user_id else None
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
-                        cpt = 1
+                        cpt = 0
                         if z_job.increase_quality: cpt += 1
                         if z_job.transcribe_audio: cpt += 10
                         
@@ -224,6 +224,11 @@ def initialize_database():
                         else:
                             total_paid = z_job.total * cpt
                             used_spent = z_job.completed * cpt
+                        
+                        if z_job.auto_add_album_art:
+                            total_paid += max(0, z_job.total - 5)
+                            used_spent += max(0, z_job.completed - 5)
+
                         unused_credits = max(0, total_paid - used_spent)
                         if z_job.payment_method == 'credits':
                             user.paid_track_credits += unused_credits
@@ -326,10 +331,24 @@ def cleanup_old_sessions():
             for job in stuck_jobs:
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
-                    cpt = 1
+                    cpt = 0
                     if job.increase_quality: cpt += 1
                     if job.transcribe_audio: cpt += 10
-                    refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt)
+                    
+                    is_premium = job.transcribe_audio or job.increase_quality
+                    if not is_premium:
+                        total_paid = max(0, job.total - 5) * cpt
+                        used_spent = max(0, job.completed - 5) * cpt
+                    else:
+                        total_paid = job.total * cpt
+                        used_spent = job.completed * cpt
+                        
+                    if job.auto_add_album_art:
+                        total_paid += max(0, job.total - 5)
+                        used_spent += max(0, job.completed - 5)
+                        
+                    refund_credits = max(0, total_paid - used_spent)
+                    refund_unused_credits(job.user_id, job.payment_method, refund_credits)
                 job.status = 'error'
                 job.error = 'Job timed out and was cancelled by the system.'
                 job.last_update = time.time() # Reset timer so it gets deleted in the next hourly sweep
@@ -1103,7 +1122,7 @@ def run_conversion_task(session_id):
         finally:
             job = ConversionJob.query.get(session_id)
             if job and job.payment_method == 'credits':
-                cpt = 1
+                cpt = 0
                 if job.increase_quality: cpt += 1
                 if job.transcribe_audio: cpt += 10
                 
@@ -1114,6 +1133,10 @@ def run_conversion_task(session_id):
                 else:
                     total_paid = job.total * cpt
                     used_spent = job.completed * cpt
+                
+                if job.auto_add_album_art:
+                    total_paid += max(0, job.total - 5)
+                    used_spent += max(0, job.completed - 5)
                 
                 refund_credits = max(0, total_paid - used_spent)
                 refund_unused_credits(job.user_id, job.payment_method, refund_credits, session_id)
@@ -1174,7 +1197,7 @@ def process_local_files():
     organize_genre = request.form.get('organize_genre') == 'true'
     auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
 
-    credits_per_track = 1
+    credits_per_track = 0
     if increase_quality: credits_per_track += 1
     if attach_lyrics: credits_per_track += 10
     
@@ -1184,6 +1207,9 @@ def process_local_files():
         total_credits_needed = max(0, total_tracks - 5) * credits_per_track
     else:
         total_credits_needed = total_tracks * credits_per_track
+        
+    if auto_add_album_art:
+        total_credits_needed += max(0, total_tracks - 5)
         
     payload_mb = request.content_length / (1024 * 1024) if request.content_length else 0
 
@@ -1271,7 +1297,7 @@ def start_conversion():
     organize_genre = data.get('organize_genre', False)
     auto_add_album_art = data.get('auto_add_album_art', False)
 
-    credits_per_track = 1
+    credits_per_track = 0
     if increase_quality: credits_per_track += 1
     if transcribe_audio: credits_per_track += 10
     
@@ -1281,6 +1307,9 @@ def start_conversion():
         total_credits_needed = max(0, total_tracks - 5) * credits_per_track
     else:
         total_credits_needed = total_tracks * credits_per_track
+        
+    if auto_add_album_art:
+        total_credits_needed += max(0, total_tracks - 5)
         
     payment_method = None
     
@@ -1394,10 +1423,24 @@ def cancel_conversion():
         
         unused_tracks = job.total - job.completed
         if unused_tracks > 0:
-            cpt = 1
+            cpt = 0
             if job.increase_quality: cpt += 1
             if job.transcribe_audio: cpt += 10
-            refund_unused_credits(job.user_id, job.payment_method, unused_tracks * cpt, session_id=None)
+            
+            is_premium = job.transcribe_audio or job.increase_quality
+            if not is_premium:
+                total_paid = max(0, job.total - 5) * cpt
+                used_spent = max(0, job.completed - 5) * cpt
+            else:
+                total_paid = job.total * cpt
+                used_spent = job.completed * cpt
+                
+            if job.auto_add_album_art:
+                total_paid += max(0, job.total - 5)
+                used_spent += max(0, job.completed - 5)
+                
+            refund_credits = max(0, total_paid - used_spent)
+            refund_unused_credits(job.user_id, job.payment_method, refund_credits, session_id=None)
             
         db.session.commit()
         return jsonify({"status": "cancelling"}), 200
