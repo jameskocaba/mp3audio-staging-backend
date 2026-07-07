@@ -153,6 +153,7 @@ class PopularURL(db.Model):
     artist = db.Column(db.String(200))
     conversion_count = db.Column(db.Integer, default=1)
     last_converted = db.Column(db.DateTime, default=datetime.utcnow)
+    thumbnail_url = db.Column(db.String(500), nullable=True)
 
 def initialize_database():
     """Runs database setup in the background to prevent boot stalling."""
@@ -167,6 +168,7 @@ def initialize_database():
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS increase_quality BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS organize_genre BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS auto_add_album_art BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE popular_url ADD COLUMN IF NOT EXISTS thumbnail_url VARCHAR(500)'))
                     db.session.commit()
                 else: # Fallback for local SQLite testing
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN increase_quality BOOLEAN DEFAULT FALSE'))
@@ -174,6 +176,8 @@ def initialize_database():
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN organize_genre BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN auto_add_album_art BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE popular_url ADD COLUMN thumbnail_url VARCHAR(500)'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
@@ -1263,6 +1267,7 @@ def start_conversion():
     
     playlist_title = 'Audio URL'
     playlist_artist = ''
+    playlist_thumbnail = ''
     
     try:
         with YoutubeDL({'extract_flat': True, 'quiet': True, 'playlistend': MAX_SONGS, 'nocheckcertificate': True}) as ydl:
@@ -1287,6 +1292,12 @@ def start_conversion():
         playlist_artist = info.get('uploader')
         if not playlist_artist and entries:
             playlist_artist = entries[0].get('uploader', 'Unknown Artist')
+            
+        playlist_thumbnail = info.get('thumbnail')
+        if not playlist_thumbnail and info.get('thumbnails'):
+            playlist_thumbnail = info['thumbnails'][-1].get('url')
+        if not playlist_thumbnail and entries:
+            playlist_thumbnail = entries[0].get('thumbnail')
             
     except Exception as e:
         valid_entries = [(1, url, "Unknown Track", "Unknown Artist", "")]
@@ -1340,11 +1351,14 @@ def start_conversion():
     if popular_url:
         popular_url.conversion_count += 1
         popular_url.last_converted = datetime.utcnow()
+        if not popular_url.thumbnail_url and playlist_thumbnail:
+            popular_url.thumbnail_url = playlist_thumbnail[:500]
     else:
         popular_url = PopularURL(
             url=url, 
             title=playlist_title[:200] if playlist_title else 'Audio URL', 
-            artist=playlist_artist[:200] if playlist_artist else ''
+            artist=playlist_artist[:200] if playlist_artist else '',
+            thumbnail_url=playlist_thumbnail[:500] if playlist_thumbnail else ''
         )
         db.session.add(popular_url)
     # -------------------------
@@ -1484,7 +1498,8 @@ def get_top_urls():
                 "desc": item.artist or "Various Artists",
                 "link": item.url,
                 "date": item.last_converted.strftime("%b %d, %Y"),
-                "count": item.conversion_count
+                "count": item.conversion_count,
+                "thumbnail_url": item.thumbnail_url or ""
             })
         return jsonify({"success": True, "data": result}), 200
     except Exception as e:
