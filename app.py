@@ -403,6 +403,10 @@ def refund_unused_credits(user_id, payment_method, unused_credits, session_id=No
     except Exception as e:
         logger.error(f"Failed to refund credits: {e}")
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
 @app.route('/auth/login', methods=['POST'])
 def send_magic_link():
     email = request.json.get('email', '').strip().lower()
