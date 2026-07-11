@@ -217,14 +217,16 @@ def initialize_database():
                     user = User.query.get(z_job.user_id) if z_job.user_id else None
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
-                        cpt = 1
-                        if z_job.increase_quality: cpt += 1
-                        if z_job.transcribe_audio: cpt += 10
-                        if z_job.auto_add_album_art: cpt += 1
+                        total_paid = max(0, z_job.total - 5) * 1
+                        if z_job.auto_add_album_art: total_paid += max(0, z_job.total - 5) * 1
+                        if z_job.increase_quality: total_paid += z_job.total * 1
+                        if z_job.transcribe_audio: total_paid += z_job.total * 10
                         
-                        total_paid = z_job.total * cpt
-                        used_spent = z_job.completed * cpt
-
+                        used_spent = max(0, z_job.completed - 5) * 1
+                        if z_job.auto_add_album_art: used_spent += max(0, z_job.completed - 5) * 1
+                        if z_job.increase_quality: used_spent += z_job.completed * 1
+                        if z_job.transcribe_audio: used_spent += z_job.completed * 10
+                        
                         unused_credits = max(0, total_paid - used_spent)
                         if z_job.payment_method == 'credits':
                             user.paid_track_credits += unused_credits
@@ -327,13 +329,15 @@ def cleanup_old_sessions():
             for job in stuck_jobs:
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
-                    cpt = 1
-                    if job.increase_quality: cpt += 1
-                    if job.transcribe_audio: cpt += 10
-                    if job.auto_add_album_art: cpt += 1
+                    total_paid = max(0, job.total - 5) * 1
+                    if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
+                    if job.increase_quality: total_paid += job.total * 1
+                    if job.transcribe_audio: total_paid += job.total * 10
                     
-                    total_paid = job.total * cpt
-                    used_spent = job.completed * cpt
+                    used_spent = max(0, job.completed - 5) * 1
+                    if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
+                    if job.increase_quality: used_spent += job.completed * 1
+                    if job.transcribe_audio: used_spent += job.completed * 10
                         
                     refund_credits = max(0, total_paid - used_spent)
                     refund_unused_credits(job.user_id, job.payment_method, refund_credits)
@@ -1093,21 +1097,15 @@ def run_conversion_task(session_id):
         finally:
             job = ConversionJob.query.get(session_id)
             if job and job.payment_method == 'credits':
-                cpt = 0
-                if job.increase_quality: cpt += 1
-                if job.transcribe_audio: cpt += 10
+                total_paid = max(0, job.total - 5) * 1
+                if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
+                if job.increase_quality: total_paid += job.total * 1
+                if job.transcribe_audio: total_paid += job.total * 10
                 
-                is_premium = job.transcribe_audio or job.increase_quality
-                if not is_premium:
-                    total_paid = max(0, job.total - 5) * cpt
-                    used_spent = max(0, job.completed - 5) * cpt
-                else:
-                    total_paid = job.total * cpt
-                    used_spent = job.completed * cpt
-                
-                if job.auto_add_album_art:
-                    total_paid += max(0, job.total - 5)
-                    used_spent += max(0, job.completed - 5)
+                used_spent = max(0, job.completed - 5) * 1
+                if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
+                if job.increase_quality: used_spent += job.completed * 1
+                if job.transcribe_audio: used_spent += job.completed * 10
                 
                 refund_credits = max(0, total_paid - used_spent)
                 refund_unused_credits(job.user_id, job.payment_method, refund_credits, session_id)
@@ -1168,15 +1166,17 @@ def process_local_files():
     organize_genre = request.form.get('organize_genre') == 'true'
     auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
 
-    credits_per_track = 1
-    if increase_quality: credits_per_track += 1
-    if attach_lyrics: credits_per_track += 10
-    if auto_add_album_art: credits_per_track += 1
+    total_credits_needed = max(0, total_tracks - 5) * 1
+    if auto_add_album_art: total_credits_needed += max(0, total_tracks - 5) * 1
+    if increase_quality: total_credits_needed += total_tracks * 1
+    if attach_lyrics: total_credits_needed += total_tracks * 10
     
-    total_credits_needed = total_tracks * credits_per_track
+    is_premium_job = attach_lyrics or increase_quality
     
     payment_method = None
-    if user.paid_track_credits >= total_credits_needed:
+    if not is_premium_job and total_tracks <= 5:
+        payment_method = 'always_free'
+    elif user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
@@ -1262,15 +1262,17 @@ def start_conversion():
     organize_genre = data.get('organize_genre', False)
     auto_add_album_art = data.get('auto_add_album_art', False)
 
-    credits_per_track = 1
-    if increase_quality: credits_per_track += 1
-    if transcribe_audio: credits_per_track += 10
-    if auto_add_album_art: credits_per_track += 1
+    total_credits_needed = max(0, total_tracks - 5) * 1
+    if auto_add_album_art: total_credits_needed += max(0, total_tracks - 5) * 1
+    if increase_quality: total_credits_needed += total_tracks * 1
+    if transcribe_audio: total_credits_needed += total_tracks * 10
     
-    total_credits_needed = total_tracks * credits_per_track
+    is_premium_job = transcribe_audio or increase_quality
     
     payment_method = None
-    if user.paid_track_credits >= total_credits_needed:
+    if not is_premium_job and total_tracks <= 5:
+        payment_method = 'always_free'
+    elif user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
@@ -1372,21 +1374,15 @@ def cancel_conversion():
         
         unused_tracks = job.total - job.completed
         if unused_tracks > 0:
-            cpt = 0
-            if job.increase_quality: cpt += 1
-            if job.transcribe_audio: cpt += 10
+            total_paid = max(0, job.total - 5) * 1
+            if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
+            if job.increase_quality: total_paid += job.total * 1
+            if job.transcribe_audio: total_paid += job.total * 10
             
-            is_premium = job.transcribe_audio or job.increase_quality
-            if not is_premium:
-                total_paid = max(0, job.total - 5) * cpt
-                used_spent = max(0, job.completed - 5) * cpt
-            else:
-                total_paid = job.total * cpt
-                used_spent = job.completed * cpt
-                
-            if job.auto_add_album_art:
-                total_paid += max(0, job.total - 5)
-                used_spent += max(0, job.completed - 5)
+            used_spent = max(0, job.completed - 5) * 1
+            if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
+            if job.increase_quality: used_spent += job.completed * 1
+            if job.transcribe_audio: used_spent += job.completed * 10
                 
             refund_credits = max(0, total_paid - used_spent)
             refund_unused_credits(job.user_id, job.payment_method, refund_credits, session_id=None)
