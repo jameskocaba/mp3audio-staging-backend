@@ -217,21 +217,13 @@ def initialize_database():
                     user = User.query.get(z_job.user_id) if z_job.user_id else None
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
-                        cpt = 0
+                        cpt = 1
                         if z_job.increase_quality: cpt += 1
                         if z_job.transcribe_audio: cpt += 10
+                        if z_job.auto_add_album_art: cpt += 1
                         
-                        is_premium = z_job.transcribe_audio or z_job.increase_quality
-                        if not is_premium:
-                            total_paid = max(0, z_job.total - 5) * cpt
-                            used_spent = max(0, z_job.completed - 5) * cpt
-                        else:
-                            total_paid = z_job.total * cpt
-                            used_spent = z_job.completed * cpt
-                        
-                        if z_job.auto_add_album_art:
-                            total_paid += max(0, z_job.total - 5)
-                            used_spent += max(0, z_job.completed - 5)
+                        total_paid = z_job.total * cpt
+                        used_spent = z_job.completed * cpt
 
                         unused_credits = max(0, total_paid - used_spent)
                         if z_job.payment_method == 'credits':
@@ -335,21 +327,13 @@ def cleanup_old_sessions():
             for job in stuck_jobs:
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
-                    cpt = 0
+                    cpt = 1
                     if job.increase_quality: cpt += 1
                     if job.transcribe_audio: cpt += 10
+                    if job.auto_add_album_art: cpt += 1
                     
-                    is_premium = job.transcribe_audio or job.increase_quality
-                    if not is_premium:
-                        total_paid = max(0, job.total - 5) * cpt
-                        used_spent = max(0, job.completed - 5) * cpt
-                    else:
-                        total_paid = job.total * cpt
-                        used_spent = job.completed * cpt
-                        
-                    if job.auto_add_album_art:
-                        total_paid += max(0, job.total - 5)
-                        used_spent += max(0, job.completed - 5)
+                    total_paid = job.total * cpt
+                    used_spent = job.completed * cpt
                         
                     refund_credits = max(0, total_paid - used_spent)
                     refund_unused_credits(job.user_id, job.payment_method, refund_credits)
@@ -479,36 +463,19 @@ def create_checkout_session():
     if user.email.startswith('anon_'):
         return jsonify({"error": "Unauthorized. Please log in first."}), 401
         
-    data = request.json or {}
-    purchase_type = data.get('type', 'credits')
-    
     try:
-        if purchase_type == 'subscription':
-            session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price': os.environ.get('STRIPE_SUBSCRIPTION_PRICE_ID'), 
-                    'quantity': 1,
-                }],
-                mode='subscription',
-                success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
-                cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
-                client_reference_id=str(user.id),
-                customer_email=user.email
-            )
-        else:
-            session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price': os.environ.get('STRIPE_CREDITS_PRICE_ID'), 
-                    'quantity': 1,
-                }],
-                mode='payment',
-                success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
-                cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
-                client_reference_id=str(user.id),
-                customer_email=user.email
-            )
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price': os.environ.get('STRIPE_CREDITS_PRICE_ID'), 
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
+            cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
+            client_reference_id=str(user.id),
+            customer_email=user.email
+        )
         return jsonify({"url": session.url})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1201,33 +1168,20 @@ def process_local_files():
     organize_genre = request.form.get('organize_genre') == 'true'
     auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
 
-    credits_per_track = 0
+    credits_per_track = 1
     if increase_quality: credits_per_track += 1
     if attach_lyrics: credits_per_track += 10
+    if auto_add_album_art: credits_per_track += 1
     
-    is_premium_job = attach_lyrics or increase_quality
+    total_credits_needed = total_tracks * credits_per_track
     
-    if not is_premium_job:
-        total_credits_needed = max(0, total_tracks - 5) * credits_per_track
-    else:
-        total_credits_needed = total_tracks * credits_per_track
-        
-    if auto_add_album_art:
-        total_credits_needed += max(0, total_tracks - 5)
-        
-    payload_mb = request.content_length / (1024 * 1024) if request.content_length else 0
-
     payment_method = None
-    if not is_premium_job and payload_mb <= 50 and total_tracks <= 5:
-        payment_method = 'always_free'
-    elif getattr(user, 'subscription_active', False):
-        payment_method = 'subscription'
-    elif user.paid_track_credits >= total_credits_needed:
+    if user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
         return jsonify({
-            "error": f"This action requires {total_credits_needed} premium credits. Please sign in to purchase credits or subscribe.", 
+            "error": f"This action requires {total_credits_needed} credits. Please log in and purchase credits.", 
             "requires_payment": True
         }), 403
 
@@ -1308,39 +1262,20 @@ def start_conversion():
     organize_genre = data.get('organize_genre', False)
     auto_add_album_art = data.get('auto_add_album_art', False)
 
-    credits_per_track = 0
+    credits_per_track = 1
     if increase_quality: credits_per_track += 1
     if transcribe_audio: credits_per_track += 10
+    if auto_add_album_art: credits_per_track += 1
     
-    is_premium_job = transcribe_audio or increase_quality
+    total_credits_needed = total_tracks * credits_per_track
     
-    if not is_premium_job:
-        total_credits_needed = max(0, total_tracks - 5) * credits_per_track
-    else:
-        total_credits_needed = total_tracks * credits_per_track
-        
-    if auto_add_album_art:
-        total_credits_needed += max(0, total_tracks - 5)
-        
     payment_method = None
-    
-    # 1. ALWAYS FREE for basic, small playlists (up to 5 tracks)
-    if not is_premium_job and total_tracks <= 5:
-        payment_method = 'always_free'
-        
-    # 2. Monthly Subscription overrides usage limits
-    elif getattr(user, 'subscription_active', False):
-        payment_method = 'subscription'
-        
-    # 3. Use Paid Credits
-    elif user.paid_track_credits >= total_credits_needed:
+    if user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
-        
-    # 4. Deny access
     else:
         return jsonify({
-            "error": f"This action requires {total_credits_needed} premium credits. Please sign in to purchase credits or subscribe.", 
+            "error": f"This action requires {total_credits_needed} credits. Please log in and purchase credits.", 
             "requires_payment": True
         }), 403
 
