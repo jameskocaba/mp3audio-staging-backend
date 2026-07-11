@@ -98,7 +98,12 @@ def not_found_error(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({'error': 'Internal Server Error'}), 500
+    import traceback
+    return jsonify({
+        'error': 'Internal Server Error',
+        'message': str(error),
+        'traceback': traceback.format_exc()
+    }), 500
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
