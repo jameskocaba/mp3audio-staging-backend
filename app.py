@@ -46,6 +46,20 @@ db_url = os.environ.get('DATABASE_URL', 'sqlite:///mp3audio.db')
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
+# Verify PostgreSQL connection works before using it
+if db_url.startswith("postgresql://"):
+    from sqlalchemy import create_engine
+    try:
+        # Check connection quickly
+        temp_engine = create_engine(db_url)
+        with temp_engine.connect() as conn:
+            pass
+        temp_engine.dispose()
+        logger.warning("Successfully connected to PostgreSQL database.")
+    except Exception as db_err:
+        logger.warning(f"Failed to connect to PostgreSQL ({db_err}). Falling back to local SQLite database.")
+        db_url = 'sqlite:///mp3audio.db'
+
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 if db_url.startswith("postgresql://"):
