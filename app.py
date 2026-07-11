@@ -96,12 +96,12 @@ def handle_global_options(path):
 def not_found_error(error):
     return jsonify({'error': 'Not Found', 'message': 'The requested URL was not found on the server.'}), 404
 
-@app.errorhandler(500)
-def internal_error(error):
+@app.errorhandler(Exception)
+def handle_exception(e):
     import traceback
     return jsonify({
         'error': 'Internal Server Error',
-        'message': str(error),
+        'message': str(e),
         'traceback': traceback.format_exc()
     }), 500
 
