@@ -50,8 +50,8 @@ if db_url.startswith("postgres://"):
 if db_url.startswith("postgresql://"):
     from sqlalchemy import create_engine
     try:
-        # Check connection quickly
-        temp_engine = create_engine(db_url)
+        # Check connection quickly with a 3-second timeout
+        temp_engine = create_engine(db_url, connect_args={'connect_timeout': 3})
         with temp_engine.connect() as conn:
             pass
         temp_engine.dispose()
@@ -67,7 +67,8 @@ if db_url.startswith("postgresql://"):
         'pool_size': 10,
         'max_overflow': 20,
         'pool_timeout': 30,
-        'pool_recycle': 1800
+        'pool_recycle': 1800,
+        'connect_args': {'connect_timeout': 10}
     }
 
 allowed_origins = [
@@ -256,8 +257,8 @@ def initialize_database():
         except Exception as e:
             logger.error(f"Database initialization delayed or failed: {e}")
 
-# Trigger DB setup synchronously so that schema changes are applied before accepting requests
-initialize_database()
+# Trigger DB setup in a background thread to prevent Gunicorn startup blocking
+Thread(target=initialize_database, daemon=True).start()
 
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
