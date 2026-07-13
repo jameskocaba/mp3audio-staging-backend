@@ -175,8 +175,11 @@ class PopularURL(db.Model):
     last_converted = db.Column(db.DateTime, default=datetime.utcnow)
     thumbnail_url = db.Column(db.String(500), nullable=True)
 
+is_db_initialized = False
+
 def initialize_database():
     """Runs database setup in the background to prevent boot stalling."""
+    global is_db_initialized
     with app.app_context():
         try:
             db.create_all()
@@ -254,6 +257,7 @@ def initialize_database():
                     z_job.error = 'Job interrupted by server reboot.'
                 db.session.commit()
                 logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
+                is_db_initialized = True
         except Exception as e:
             logger.error(f"Database initialization delayed or failed: {e}")
 
@@ -1504,6 +1508,8 @@ def admin_jobs():
 def health():
     check_db = request.args.get('check_db', '').lower() == 'true'
     if check_db:
+        if not is_db_initialized:
+            return jsonify({"status": "initializing", "database": "migrating"}), 503
         try:
             # Check database connection works
             db.session.execute(text('SELECT 1'))
