@@ -411,6 +411,19 @@ def send_email_notification(recipient, subject, html_content):
         return False
 
 def get_or_create_user():
+    # Check Authorization header first (for cookie-blocked environments like mobile Safari)
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header.split(' ')[1]
+        try:
+            user_id = serializer.loads(token, salt='user-session')
+            user = User.query.get(user_id)
+            if user:
+                session['user_id'] = user.id
+                return user
+        except Exception:
+            pass
+
     if 'user_id' in session:
         user = User.query.get(session['user_id'])
         if user: return user
@@ -475,18 +488,24 @@ def verify_magic_link():
     user = User.query.filter_by(email=email).first()
     if user:
         session['user_id'] = user.id
-        return jsonify({"success": True})
+        session_token = serializer.dumps(user.id, salt='user-session')
+        return jsonify({
+            "success": True,
+            "token": session_token
+        })
     return jsonify({"error": "User not found"}), 404
 
 @app.route('/auth/me', methods=['GET'])
 def get_current_user():
     user = get_or_create_user()
     is_guest = user.email.startswith('anon_')
+    session_token = serializer.dumps(user.id, salt='user-session')
     return jsonify({
         "authenticated": not is_guest,
         "email": None if is_guest else user.email,
         "paid_track_credits": user.paid_track_credits,
-        "subscription_active": getattr(user, 'subscription_active', False)
+        "subscription_active": getattr(user, 'subscription_active', False),
+        "token": session_token
     })
 
 @app.route('/auth/logout', methods=['POST'])
