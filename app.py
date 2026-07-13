@@ -460,10 +460,8 @@ def send_magic_link():
         <a href="{magic_url}" style="background: linear-gradient(90deg, #f59e0b 0%, #4f46e5 100%); background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 10px rgba(139, 92, 246, 0.3);">Log In Securely</a>
         <p style="color: #94a3b8; font-size: 12px; margin-top: 25px; line-height: 1.4;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
     </div>"""
-    success = send_email_notification(email, email_subject, html)
-    if not success:
-        return jsonify({"error": "Failed to send email. Provider blocked the request."}), 500
-        
+    # Send the magic link email in a background thread to prevent blocking Gunicorn workers
+    Thread(target=send_email_notification, args=(email, email_subject, html), daemon=True).start()
     return jsonify({"success": True, "message": "Magic link sent to your email."})
 
 @app.route('/auth/verify', methods=['POST'])
