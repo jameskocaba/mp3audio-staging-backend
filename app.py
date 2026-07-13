@@ -1500,7 +1500,17 @@ def admin_jobs():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health')
-def health(): return jsonify({"status": "ok"}), 200
+def health():
+    try:
+        # Check database connection works
+        db.session.execute(text('SELECT 1'))
+        db.session.commit()
+        return jsonify({"status": "ok", "database": "connected"}), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Health check failed database ping: {e}")
+        return jsonify({"status": "error", "database": "disconnected", "error": str(e)}), 500
+
 @app.route('/')
 def index(): return jsonify({"message": "Audio Processor API", "status": "active"}), 200
 
