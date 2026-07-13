@@ -306,6 +306,13 @@ def setup_s3_lifecycle():
                             'NoncurrentVersionExpiration': {'NoncurrentDays': 14},
                             # Cleans up failed/stuck multipart uploads to save space
                             'AbortIncompleteMultipartUpload': {'DaysAfterInitiation': 7}
+                        },
+                        {
+                            'ID': 'AutoDelete14DaysDeleteMarkers',
+                            'Filter': {'Prefix': 'downloads/'},
+                            'Status': 'Enabled',
+                            # Required by Backblaze B2: an ExpiredObjectDeleteMarker rule is paired with the Expiration rule for the same prefix
+                            'Expiration': {'ExpiredObjectDeleteMarker': True}
                         }
                     ]
                 }
