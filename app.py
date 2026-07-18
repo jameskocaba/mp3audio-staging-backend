@@ -1336,20 +1336,21 @@ def start_conversion():
     
     # --- TRACK POPULAR URL ---
 
-    popular_url = PopularURL.query.filter_by(url=url).first()
-    if popular_url:
-        popular_url.conversion_count += 1
-        popular_url.last_converted = datetime.utcnow()
-        if not popular_url.thumbnail_url and playlist_thumbnail:
-            popular_url.thumbnail_url = playlist_thumbnail[:500]
-    else:
-        popular_url = PopularURL(
-            url=url, 
-            title=playlist_title[:200] if playlist_title else 'Audio URL', 
-            artist=playlist_artist[:200] if playlist_artist else '',
-            thumbnail_url=playlist_thumbnail[:500] if playlist_thumbnail else ''
-        )
-        db.session.add(popular_url)
+    if auto_add_album_art:
+        popular_url = PopularURL.query.filter_by(url=url).first()
+        if popular_url:
+            popular_url.conversion_count += 1
+            popular_url.last_converted = datetime.utcnow()
+            if not popular_url.thumbnail_url and playlist_thumbnail:
+                popular_url.thumbnail_url = playlist_thumbnail[:500]
+        else:
+            popular_url = PopularURL(
+                url=url, 
+                title=playlist_title[:200] if playlist_title else 'Audio URL', 
+                artist=playlist_artist[:200] if playlist_artist else '',
+                thumbnail_url=playlist_thumbnail[:500] if playlist_thumbnail else ''
+            )
+            db.session.add(popular_url)
     # -------------------------
     
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
