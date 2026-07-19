@@ -1473,8 +1473,8 @@ def get_top_urls():
     try:
         limit = int(request.args.get('limit', 20))
         offset = int(request.args.get('offset', 0))
-        # Get the top most converted URLs, break ties by newest conversion date
-        top_urls = PopularURL.query.order_by(PopularURL.conversion_count.desc(), PopularURL.last_converted.desc()).limit(limit).offset(offset).all()
+        # Get the most recently converted URLs
+        top_urls = PopularURL.query.order_by(PopularURL.last_converted.desc()).limit(limit).offset(offset).all()
         result = []
         for item in top_urls:
             result.append({
