@@ -732,36 +732,60 @@ def resolve_track_metadata(file_path, original_title, original_artist):
 
 def fetch_album_art_from_itunes(track_title, artist_name=None):
     """Queries iTunes Search API for album artwork URL, returning updated metadata and high-res cover URL."""
-    try:
-        query = f"{track_title}"
-        if artist_name and artist_name != "Unknown Artist":
-            query = f"{artist_name} {track_title}"
+    if not track_title or not isinstance(track_title, str):
+        return None
+
+    def clean_query(text):
+        if not text:
+            return ""
+        # Remove file extensions
+        text = re.sub(r'\.(mp3|wav|flac|m4a|aac|ogg|wma)$', '', text, flags=re.IGNORECASE)
+        # Remove common video/audio tag noise
+        text = re.sub(r'[\(\[\{].*?(official|video|lyric|lyrics|audio|remaster|hd|4k|version|edit|visualizer|clip|full).*?[\)\]\}]', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\b(official video|official audio|lyrics|lyric video|hd|4k|full song)\b', '', text, flags=re.IGNORECASE)
+        text = text.replace('_', ' ')
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    clean_title = clean_query(track_title)
+    clean_artist = clean_query(artist_name) if artist_name and artist_name != "Unknown Artist" else ""
+
+    queries = []
+    if clean_artist and clean_title:
+        queries.append(f"{clean_artist} {clean_title}")
+    if clean_title:
+        queries.append(clean_title)
+    if track_title and track_title not in queries:
+        queries.append(track_title)
+
+    for q in queries:
+        try:
+            url = "https://itunes.apple.com/search"
+            params = {
+                "term": q,
+                "media": "music",
+                "entity": "song",
+                "limit": 1
+            }
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                if results:
+                    result = results[0]
+                    artwork_url = result.get("artworkUrl100", "")
+                    if artwork_url:
+                        # Upgrade resolution from 100x100 to 1000x1000 for maximum quality album art
+                        high_res_url = artwork_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                        return {
+                            "artwork_url": high_res_url,
+                            "track_name": result.get("trackName", track_title),
+                            "artist_name": result.get("artistName", artist_name or "Unknown Artist"),
+                            "album_name": result.get("collectionName", "Single / Unknown Album")
+                        }
+        except Exception as e:
+            logger.warning(f"iTunes Search API lookup failed for term '{q}': {e}")
             
-        url = "https://itunes.apple.com/search"
-        params = {
-            "term": query,
-            "media": "music",
-            "entity": "song",
-            "limit": 1
-        }
-        response = requests.get(url, params=params, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            results = data.get("results", [])
-            if results:
-                result = results[0]
-                artwork_url = result.get("artworkUrl100", "")
-                if artwork_url:
-                    # Upgrade the resolution from 100x100 to 1000x1000
-                    high_res_url = artwork_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
-                    return {
-                        "artwork_url": high_res_url,
-                        "track_name": result.get("trackName", track_title),
-                        "artist_name": result.get("artistName", artist_name),
-                        "album_name": result.get("collectionName", "Unknown Album")
-                    }
-    except Exception as e:
-        logger.warning(f"iTunes Search API lookup failed: {e}")
     return None
 
 def download_image(url, temp_dir):
@@ -927,12 +951,15 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 
                 # Fetch artwork and full track info from iTunes Search API
                 itunes_info = fetch_album_art_from_itunes(resolved_title, resolved_artist)
+                if not itunes_info and (track_name != resolved_title or artist_name != resolved_artist):
+                    itunes_info = fetch_album_art_from_itunes(track_name, artist_name)
+
                 if itunes_info:
                     track_name = itunes_info["track_name"]
                     artist_name = itunes_info["artist_name"]
                     album_name = itunes_info["album_name"]
                     
-                    # Download cover artwork to embed it
+                    # Download cover artwork from iTunes to embed it
                     cover_path = download_image(itunes_info["artwork_url"], session_dir)
                     if cover_path:
                         # Update current thumbnail to show the fetched album art in the progress bar
@@ -940,6 +967,12 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                         if job:
                             job.current_thumbnail = thumbnail
                             db.session.commit()
+                elif thumbnail and thumbnail.startswith('http'):
+                    # Fall back to downloading provided thumbnail if iTunes returns no match
+                    cover_path = download_image(thumbnail, session_dir)
+                    track_name = resolved_title
+                    artist_name = resolved_artist
+                    album_name = resolved_album
                 else:
                     # Fall back to using cleaner resolved title/artist
                     track_name = resolved_title
