@@ -681,6 +681,7 @@ def resolve_track_metadata(file_path, original_title, original_artist):
     title = original_title
     artist = original_artist
     album = "Unknown Album"
+    year = None
     
     # Step 1: Read existing metadata tags using ffprobe (non-intrusive metadata check)
     try:
@@ -697,6 +698,12 @@ def resolve_track_metadata(file_path, original_title, original_artist):
             artist = tags_lower.get('artist')
         if tags_lower.get('album'):
             album = tags_lower.get('album')
+        for date_key in ['date', 'year', 'tyer', 'tdrc', 'tdat', 'recording_time']:
+            if tags_lower.get(date_key):
+                ym = re.search(r'\b(19\d\d|20\d\d)\b', str(tags_lower[date_key]))
+                if ym:
+                    year = ym.group(1)
+                    break
     except Exception:
         pass
         
@@ -728,7 +735,7 @@ def resolve_track_metadata(file_path, original_title, original_artist):
         except Exception as e:
             logger.warning(f"AcoustID audio fingerprinting lookup failed: {e}")
             
-    return title, artist, album
+    return title, artist, album, year
 
 def fetch_album_art_from_itunes(track_title, artist_name=None):
     """Queries iTunes Search API for album artwork URL, returning updated metadata and high-res cover URL."""
@@ -777,11 +784,18 @@ def fetch_album_art_from_itunes(track_title, artist_name=None):
                     if artwork_url:
                         # Upgrade resolution from 100x100 to 1000x1000 for maximum quality album art
                         high_res_url = artwork_url.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                        release_date = result.get("releaseDate")
+                        track_year = None
+                        if release_date:
+                            ym = re.search(r'\b(19\d\d|20\d\d)\b', str(release_date))
+                            if ym:
+                                track_year = ym.group(1)
                         return {
                             "artwork_url": high_res_url,
                             "track_name": result.get("trackName", track_title),
                             "artist_name": result.get("artistName", artist_name or "Unknown Artist"),
-                            "album_name": result.get("collectionName", "Single / Unknown Album")
+                            "album_name": result.get("collectionName", "Single / Unknown Album"),
+                            "year": track_year
                         }
         except Exception as e:
             logger.warning(f"iTunes Search API lookup failed for term '{q}': {e}")
@@ -870,6 +884,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
     original_ext = local_path.split('.')[-1].lower() if is_local_file and '.' in local_path else 'mp3'
     
     album_name = "Unknown Album"
+    track_year = None
 
     # Extract metadata immediately for local files before doing anything else
     if is_local_file:
@@ -884,6 +899,12 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             if tags_lower.get('artist'): artist_name = tags_lower.get('artist')
             if tags_lower.get('album'): album_name = tags_lower.get('album')
             if tags_lower.get('title'): track_name = tags_lower.get('title')
+            for date_key in ['date', 'year', 'tyer', 'tdrc', 'tdat', 'recording_time']:
+                if tags_lower.get(date_key):
+                    ym = re.search(r'\b(19\d\d|20\d\d)\b', str(tags_lower[date_key]))
+                    if ym:
+                        track_year = ym.group(1)
+                        break
         except Exception as e:
             pass
 
@@ -907,6 +928,14 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     if info.get('uploader'): artist_name = info['uploader']
                     if info.get('album'): album_name = info['album']
                     if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
+                    if info.get('release_year'):
+                        track_year = str(info['release_year'])
+                    elif info.get('release_date'):
+                        ym = re.search(r'\b(19\d\d|20\d\d)\b', str(info['release_date']))
+                        if ym: track_year = ym.group(1)
+                    elif info.get('upload_date'):
+                        ym = re.search(r'\b(19\d\d|20\d\d)\b', str(info['upload_date']))
+                        if ym: track_year = ym.group(1)
                     db.session.commit()
             except: pass
             
@@ -947,7 +976,9 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             # Resolve track metadata if auto_add_album_art is requested, or if metadata is unknown
             cover_path = None
             if auto_add_album_art:
-                resolved_title, resolved_artist, resolved_album = resolve_track_metadata(file_to_zip, track_name, artist_name)
+                resolved_title, resolved_artist, resolved_album, resolved_year = resolve_track_metadata(file_to_zip, track_name, artist_name)
+                if resolved_year and not track_year:
+                    track_year = resolved_year
                 
                 # Fetch artwork and full track info from iTunes Search API
                 itunes_info = fetch_album_art_from_itunes(resolved_title, resolved_artist)
@@ -958,6 +989,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     track_name = itunes_info["track_name"]
                     artist_name = itunes_info["artist_name"]
                     album_name = itunes_info["album_name"]
+                    if itunes_info.get("year"):
+                        track_year = itunes_info["year"]
                     
                     # Download cover artwork from iTunes to embed it
                     cover_path = download_image(itunes_info["artwork_url"], session_dir)
@@ -973,11 +1006,15 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     track_name = resolved_title
                     artist_name = resolved_artist
                     album_name = resolved_album
+                    if resolved_year:
+                        track_year = resolved_year
                 else:
                     # Fall back to using cleaner resolved title/artist
                     track_name = resolved_title
                     artist_name = resolved_artist
                     album_name = resolved_album
+                    if resolved_year:
+                        track_year = resolved_year
 
             # 1. TRANSCRIBE (if requested) so we have lyrics to physically embed
             lyrics_text = ""
@@ -1012,6 +1049,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                     cmd.extend(['-metadata', f'artist={artist_name}'])
                 if album_name and album_name != "Unknown Album":
                     cmd.extend(['-metadata', f'album={album_name}'])
+                if track_year:
+                    cmd.extend(['-metadata', f'date={track_year}'])
                 if lyrics_text:
                     cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
                     
@@ -1035,6 +1074,8 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                         fallback_cmd.extend(['-metadata', f'artist={artist_name}'])
                     if album_name and album_name != "Unknown Album":
                         fallback_cmd.extend(['-metadata', f'album={album_name}'])
+                    if track_year:
+                        fallback_cmd.extend(['-metadata', f'date={track_year}'])
                     if lyrics_text:
                         fallback_cmd.extend(['-metadata', f'lyrics={lyrics_text}'])
                     fallback_cmd.append(temp_output)
