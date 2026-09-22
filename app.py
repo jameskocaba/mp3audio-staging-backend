@@ -165,6 +165,7 @@ class ConversionJob(db.Model):
     increase_quality = db.Column(db.Boolean, default=False)
     organize_genre = db.Column(db.Boolean, default=False)
     auto_add_album_art = db.Column(db.Boolean, default=False)
+    video_to_mp3 = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -191,6 +192,7 @@ def initialize_database():
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS increase_quality BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS organize_genre BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS auto_add_album_art BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS video_to_mp3 BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE popular_url ADD COLUMN IF NOT EXISTS thumbnail_url VARCHAR(500)'))
                     db.session.commit()
                 else: # Fallback for local SQLite testing
@@ -199,6 +201,8 @@ def initialize_database():
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN organize_genre BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN auto_add_album_art BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN video_to_mp3 BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE popular_url ADD COLUMN thumbnail_url VARCHAR(500)'))
                     except: pass
@@ -241,11 +245,13 @@ def initialize_database():
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
                         total_paid = max(0, z_job.total - 5) * 1
+                        if getattr(z_job, 'video_to_mp3', False): total_paid += z_job.total * 5
                         if z_job.auto_add_album_art: total_paid += max(0, z_job.total - 5) * 1
                         if z_job.increase_quality: total_paid += z_job.total * 1
                         if z_job.transcribe_audio: total_paid += z_job.total * 10
                         
                         used_spent = max(0, z_job.completed - 5) * 1
+                        if getattr(z_job, 'video_to_mp3', False): used_spent += z_job.completed * 5
                         if z_job.auto_add_album_art: used_spent += max(0, z_job.completed - 5) * 1
                         if z_job.increase_quality: used_spent += z_job.completed * 1
                         if z_job.transcribe_audio: used_spent += z_job.completed * 10
@@ -361,11 +367,13 @@ def cleanup_old_sessions():
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
                     total_paid = max(0, job.total - 5) * 1
+                    if getattr(job, 'video_to_mp3', False): total_paid += job.total * 5
                     if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
                     if job.increase_quality: total_paid += job.total * 1
                     if job.transcribe_audio: total_paid += job.total * 10
                     
                     used_spent = max(0, job.completed - 5) * 1
+                    if getattr(job, 'video_to_mp3', False): used_spent += job.completed * 5
                     if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
                     if job.increase_quality: used_spent += job.completed * 1
                     if job.transcribe_audio: used_spent += job.completed * 10
@@ -819,7 +827,7 @@ def download_image(url, temp_dir):
         logger.warning(f"Failed to download artwork from {url}: {e}")
     return None
 
-def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False, auto_add_album_art=False):
+def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False, auto_add_album_art=False, video_to_mp3=False):
     job = ConversionJob.query.get(session_id)
     if not job or job.status == 'cancelled': return False
 
@@ -947,12 +955,15 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
                 file_to_zip = mp3_files[0]
                 original_ext = 'mp3'
         else:
-            if increase_quality:
-                # If enhancing quality, standardize to high-fidelity mp3
+            video_extensions = {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'flv', 'wmv', '3gp', 'ts'}
+            is_video = (original_ext in video_extensions) or video_to_mp3
+
+            if increase_quality or is_video:
+                # Standardize to MP3. If increase_quality is True, use 320k; otherwise standard 192k.
                 original_ext = 'mp3'
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
-                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn']
-                cmd.extend(['-b:a', '320k']) # Upsample/Increase bitrate
+                bitrate = '320k' if increase_quality else '192k'
+                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn', '-c:a', 'libmp3lame', '-b:a', bitrate]
             else:
                 # NEVER convert format unless requested: just strip video/art and copy raw audio
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.{original_ext}")
@@ -1194,7 +1205,7 @@ def run_conversion_task(session_id):
                 job = ConversionJob.query.get(session_id)
                 if job.status == 'cancelled': break
                 
-                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre, job.auto_add_album_art)
+                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre, job.auto_add_album_art, getattr(job, 'video_to_mp3', False))
 
             job = ConversionJob.query.get(session_id)
             if job.status != 'cancelled':
@@ -1224,11 +1235,13 @@ def run_conversion_task(session_id):
             job = ConversionJob.query.get(session_id)
             if job and job.payment_method == 'credits':
                 total_paid = max(0, job.total - 5) * 1
+                if getattr(job, 'video_to_mp3', False): total_paid += job.total * 5
                 if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
                 if job.increase_quality: total_paid += job.total * 1
                 if job.transcribe_audio: total_paid += job.total * 10
                 
                 used_spent = max(0, job.completed - 5) * 1
+                if getattr(job, 'video_to_mp3', False): used_spent += job.completed * 5
                 if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
                 if job.increase_quality: used_spent += job.completed * 1
                 if job.transcribe_audio: used_spent += job.completed * 10
@@ -1291,13 +1304,29 @@ def process_local_files():
     attach_lyrics = request.form.get('attach_lyrics') == 'true'
     organize_genre = request.form.get('organize_genre') == 'true'
     auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
+    video_to_mp3 = request.form.get('video_to_mp3') == 'true'
+
+    video_extensions = {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'flv', 'wmv', '3gp', 'ts'}
+    video_count = 0
+    for file in uploaded_files:
+        ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+        if ext in video_extensions:
+            video_count += 1
+
+    if video_count > 0:
+        video_to_mp3 = True
 
     total_credits_needed = max(0, total_tracks - 5) * 1
+    if video_to_mp3 and video_count > 0:
+        total_credits_needed += video_count * 5  # 5 credits per video file
+    elif video_to_mp3:
+        total_credits_needed += total_tracks * 5
+
     if auto_add_album_art: total_credits_needed += max(0, total_tracks - 5) * 1
     if increase_quality: total_credits_needed += total_tracks * 1
     if attach_lyrics: total_credits_needed += total_tracks * 10
     
-    is_premium_job = attach_lyrics or increase_quality
+    is_premium_job = attach_lyrics or increase_quality or (video_to_mp3 and video_count > 0)
     
     payment_method = None
     if not is_premium_job and total_tracks <= 5:
@@ -1306,8 +1335,9 @@ def process_local_files():
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
     else:
+        error_detail = f"Video to MP3 conversion requires {total_credits_needed} credits ({video_count} video file(s) at 5 credits each)." if (video_to_mp3 and video_count > 0) else f"This action requires {total_credits_needed} credits."
         return jsonify({
-            "error": f"This action requires {total_credits_needed} credits. Please log in and purchase credits.", 
+            "error": f"{error_detail} Please log in and purchase credits.", 
             "requires_payment": True
         }), 403
 
@@ -1331,7 +1361,7 @@ def process_local_files():
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
     job_priority = 1 if payment_method == 'credits' else 0
 
-    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art)
+    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3)
     db.session.add(new_job)
     db.session.commit()
     return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
@@ -1445,7 +1475,8 @@ def start_conversion():
         transcribe_audio=transcribe_audio,
         increase_quality=increase_quality,
         organize_genre=organize_genre,
-        auto_add_album_art=auto_add_album_art
+        auto_add_album_art=auto_add_album_art,
+        video_to_mp3=data.get('video_to_mp3', False)
     )
     db.session.add(new_job)
     db.session.commit()
