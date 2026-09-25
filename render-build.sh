@@ -20,10 +20,11 @@ export SSL_CERT_FILE=$(python -m certifi)
 mkdir -p ffmpeg_bin
 cd ffmpeg_bin
 
-# 4. Download and extract FFmpeg
-# We use -O to ensure the filename is consistent
-wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O ffmpeg.tar.xz
-tar xf ffmpeg.tar.xz --strip-components=1
+# 4. Download and extract FFmpeg & FFprobe (GitHub CDN prebuilt static binaries)
+wget https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/ffmpeg-6.1-linux-64.zip -O ffmpeg.zip
+python -m zipfile -e ffmpeg.zip .
+wget https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/ffprobe-6.1-linux-64.zip -O ffprobe.zip
+python -m zipfile -e ffprobe.zip .
 
 # 4b. Download and extract AcoustID Chromaprint fpcalc binary
 wget https://github.com/acoustid/chromaprint/releases/download/v1.6.0/chromaprint-fpcalc-1.6.0-linux-x86_64.tar.gz -O fpcalc.tar.gz
@@ -34,6 +35,6 @@ chmod +x ffmpeg ffprobe fpcalc
 
 # Clean up the compressed files to save space
 cd ..
-rm -f ffmpeg_bin/ffmpeg.tar.xz ffmpeg_bin/fpcalc.tar.gz
+rm -f ffmpeg_bin/ffmpeg.zip ffmpeg_bin/ffprobe.zip ffmpeg_bin/fpcalc.tar.gz
 
 echo "Build successful with SSL fix, FFmpeg setup, and bleeding-edge yt-dlp!"
