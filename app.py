@@ -166,6 +166,7 @@ class ConversionJob(db.Model):
     organize_genre = db.Column(db.Boolean, default=False)
     auto_add_album_art = db.Column(db.Boolean, default=False)
     video_to_mp3 = db.Column(db.Boolean, default=False)
+    is_ringtone = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -176,6 +177,11 @@ class PopularURL(db.Model):
     last_converted = db.Column(db.DateTime, default=datetime.utcnow)
     thumbnail_url = db.Column(db.String(500), nullable=True)
 
+class SiteStats(db.Model):
+    __tablename__ = 'site_stats'
+    id = db.Column(db.Integer, primary_key=True)
+    total_tracks = db.Column(db.Integer, default=0)
+
 is_db_initialized = False
 
 def initialize_database():
@@ -184,6 +190,23 @@ def initialize_database():
     with app.app_context():
         try:
             db.create_all()
+
+            # Initialize SiteStats if not present
+            try:
+                stats = SiteStats.query.first()
+                if not stats:
+                    try:
+                        result = db.session.execute(text('SELECT SUM(completed) FROM conversion_job')).scalar()
+                        initial_tracks = int(result) if result else 0
+                    except Exception as bootstrap_err:
+                        logger.warning(f"Could not bootstrap stats from conversion_job: {bootstrap_err}")
+                        initial_tracks = 0
+                    stats = SiteStats(total_tracks=initial_tracks)
+                    db.session.add(stats)
+                    db.session.commit()
+            except Exception as stats_init_err:
+                db.session.rollback()
+                logger.warning(f"SiteStats initialization failed: {stats_init_err}")
             
             # --- AUTO MIGRATION FOR NEW COLUMNS ---
             # Adds missing columns to existing databases without requiring Alembic
@@ -193,6 +216,7 @@ def initialize_database():
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS organize_genre BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS auto_add_album_art BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS video_to_mp3 BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS is_ringtone BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE popular_url ADD COLUMN IF NOT EXISTS thumbnail_url VARCHAR(500)'))
                     db.session.commit()
                 else: # Fallback for local SQLite testing
@@ -203,6 +227,8 @@ def initialize_database():
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN auto_add_album_art BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN video_to_mp3 BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN is_ringtone BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE popular_url ADD COLUMN thumbnail_url VARCHAR(500)'))
                     except: pass
@@ -263,9 +289,11 @@ def initialize_database():
                     z_job.error = 'Job interrupted by server reboot.'
                 db.session.commit()
                 logger.warning(f"Recovered and refunded {len(zombie_jobs)} jobs interrupted by server reboot.")
-                is_db_initialized = True
+            
+            is_db_initialized = True
         except Exception as e:
             logger.error(f"Database initialization delayed or failed: {e}")
+
 
 # Trigger DB setup in a background thread to prevent Gunicorn startup blocking
 Thread(target=initialize_database, daemon=True).start()
@@ -398,25 +426,44 @@ Thread(target=automated_cleanup_loop, daemon=True).start()
 
 def send_email_notification(recipient, subject, html_content):
     print(f"--- Attempting to send email to {recipient} ---", flush=True)
+    resend_key = os.environ.get('RESEND_API_KEY')
+    if not resend_key:
+        err_msg = "RESEND_API_KEY is not set in environment variables."
+        print(f"ERROR: {err_msg}", flush=True)
+        return False, err_msg
+        
+    raw_from = os.environ.get('FROM_EMAIL', 'notifications@mail.mp3aud.io').strip()
+    if '<' in raw_from and '>' in raw_from:
+        from_email = raw_from
+    else:
+        from_email = f"MP3aud.io <{raw_from}>"
+
+    payload = {
+        "from": from_email,
+        "to": [recipient],
+        "subject": subject,
+        "html": html_content
+    }
+
     try:
-        resend_key = os.environ.get('RESEND_API_KEY')
-        if not resend_key:
-            print("ERROR: RESEND_API_KEY is not set in environment variables.", flush=True)
-            return False
-            
-        resend.api_key = resend_key
-        from_email = os.environ.get('FROM_EMAIL', 'onboarding@resend.dev')
-        response = resend.Emails.send({
-            "from": f"MP3 Audio Tools <{from_email}>",
-            "to": [recipient],
-            "subject": subject,
-            "html": html_content,
-        })
-        print(f"SUCCESS: Email sent via Resend. Response: {response}", flush=True)
-        return True
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_key.strip()}",
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=10
+        )
+        print(f"Resend HTTP Status: {resp.status_code}, Body: {resp.text}", flush=True)
+        if resp.status_code in (200, 201):
+            return True, None
+        else:
+            return False, f"Resend API Error ({resp.status_code}): {resp.text}"
     except Exception as e:
-        print(f"RESEND API EXCEPTION: Failed to send email to {recipient}: {str(e)}", flush=True)
-        return False
+        err_msg = f"Failed to connect to Resend: {str(e)}"
+        print(f"RESEND EXCEPTION: {err_msg}", flush=True)
+        return False, err_msg
 
 def get_or_create_user():
     # Check Authorization header first (for cookie-blocked environments like mobile Safari)
@@ -471,7 +518,14 @@ def send_magic_link():
         db.session.commit()
         
     token = serializer.dumps(email, salt='magic-link')
-    magic_url = f"{FRONTEND_URL.rstrip('/')}/?token={token}"
+    
+    # Determine base frontend URL: prioritize Origin header if trusted, else FRONTEND_URL
+    origin = request.headers.get('Origin', '').rstrip('/')
+    base_url = FRONTEND_URL.rstrip('/')
+    if origin and origin in allowed_origins:
+        base_url = origin
+
+    magic_url = f"{base_url}/?token={token}"
     
     email_subject = "Secure Login - MP3aud.io"
     html = f"""
@@ -481,8 +535,12 @@ def send_magic_link():
         <a href="{magic_url}" style="background: linear-gradient(90deg, #f59e0b 0%, #4f46e5 100%); background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; font-size: 16px; box-shadow: 0 4px 10px rgba(139, 92, 246, 0.3);">Log In Securely</a>
         <p style="color: #94a3b8; font-size: 12px; margin-top: 25px; line-height: 1.4;">If you didn't request this link, you can safely ignore this email. The link will expire in 1 hour.</p>
     </div>"""
-    # Send the magic link email in a background thread to prevent blocking Gunicorn workers
-    Thread(target=send_email_notification, args=(email, email_subject, html), daemon=True).start()
+    
+    success, err = send_email_notification(email, email_subject, html)
+    if not success:
+        logger.error(f"Magic link delivery failed: {err}")
+        return jsonify({"error": f"Failed to send email. {err}"}), 500
+
     return jsonify({"success": True, "message": "Magic link sent to your email."})
 
 @app.route('/auth/verify', methods=['POST'])
@@ -827,7 +885,7 @@ def download_image(url, temp_dir):
         logger.warning(f"Failed to download artwork from {url}: {e}")
     return None
 
-def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False, auto_add_album_art=False, video_to_mp3=False):
+def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_path, track_name, artist_name, thumbnail, start_time, end_time, transcribe_audio, increase_quality=False, organize_genre=False, auto_add_album_art=False, video_to_mp3=False, is_ringtone=False):
     job = ConversionJob.query.get(session_id)
     if not job or job.status == 'cancelled': return False
 
@@ -958,16 +1016,26 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             video_extensions = {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'flv', 'wmv', '3gp', 'ts'}
             is_video = (original_ext in video_extensions) or video_to_mp3
 
-            if increase_quality or is_video:
+            if increase_quality or is_video or is_ringtone:
                 # Standardize to MP3. If increase_quality is True, use 320k; otherwise standard 192k.
                 original_ext = 'mp3'
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.mp3")
                 bitrate = '320k' if increase_quality else '192k'
-                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn', '-c:a', 'libmp3lame', '-b:a', bitrate]
+                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M']
+                if start_time:
+                    cmd.extend(['-ss', str(start_time)])
+                if end_time:
+                    cmd.extend(['-to', str(end_time)])
+                cmd.extend(['-i', local_path, '-vn', '-c:a', 'libmp3lame', '-b:a', bitrate])
             else:
                 # NEVER convert format unless requested: just strip video/art and copy raw audio
                 file_to_zip = os.path.join(session_dir, f"{temp_filename_base}.{original_ext}")
-                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M', '-i', local_path, '-vn', '-c:a', 'copy']
+                cmd = [ffmpeg_exe, '-y', '-probesize', '50M', '-analyzeduration', '100M']
+                if start_time:
+                    cmd.extend(['-ss', str(start_time)])
+                if end_time:
+                    cmd.extend(['-to', str(end_time)])
+                cmd.extend(['-i', local_path, '-vn', '-c:a', 'copy'])
                 
             cmd.append(file_to_zip)
             
@@ -1113,8 +1181,20 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             else:
                 clean_name = "".join([c for c in f"{artist_name} - {track_name}"[:100] if c.isalnum() or c in (' ', '-', '_')]).strip() or f"Track_{track_index}"
             
+            m4r_file = None
+            if (is_ringtone or video_to_mp3) and file_to_zip and os.path.exists(file_to_zip):
+                try:
+                    m4r_file = os.path.join(session_dir, f"{temp_filename_base}_iphone.m4r")
+                    cmd_m4r = [ffmpeg_exe, '-y', '-i', file_to_zip, '-vn', '-c:a', 'aac', '-b:a', '256k', m4r_file]
+                    subprocess.run(cmd_m4r, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                except Exception as e_m4r:
+                    logger.warning(f"M4R generation failed: {e_m4r}")
+                    m4r_file = None
+
             with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_STORED) as z:
                 z.write(file_to_zip, f"{folder_path}{clean_name}.{original_ext}")
+                if m4r_file and os.path.exists(m4r_file):
+                    z.write(m4r_file, f"{folder_path}{clean_name}.m4r")
             
                 if transcribe_audio:
                     if not is_local_file:
@@ -1133,6 +1213,13 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             completed_list = list(job.completed_tracks)
             completed_list.append(clean_name)
             job.completed_tracks = completed_list
+            
+            # Increment global site stats persistently
+            try:
+                db.session.execute(text('UPDATE site_stats SET total_tracks = total_tracks + 1'))
+            except Exception as stats_err:
+                logger.warning(f"Failed to increment global stats: {stats_err}")
+                
             db.session.commit()
             
             if is_local_file:
@@ -1205,7 +1292,7 @@ def run_conversion_task(session_id):
                 job = ConversionJob.query.get(session_id)
                 if job.status == 'cancelled': break
                 
-                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre, job.auto_add_album_art, getattr(job, 'video_to_mp3', False))
+                process_track(t_url, session_dir, idx, ffmpeg_exe, session_id, zip_path, t_title, t_artist, t_thumb, job.start_time, job.end_time, job.transcribe_audio, job.increase_quality, job.organize_genre, job.auto_add_album_art, getattr(job, 'video_to_mp3', False), getattr(job, 'is_ringtone', False))
 
             job = ConversionJob.query.get(session_id)
             if job.status != 'cancelled':
@@ -1305,6 +1392,9 @@ def process_local_files():
     organize_genre = request.form.get('organize_genre') == 'true'
     auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
     video_to_mp3 = request.form.get('video_to_mp3') == 'true'
+    is_ringtone = request.form.get('is_ringtone') == 'true'
+    start_time = request.form.get('start_time')
+    end_time = request.form.get('end_time')
 
     video_extensions = {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'flv', 'wmv', '3gp', 'ts'}
     video_count = 0
@@ -1315,6 +1405,8 @@ def process_local_files():
 
     if video_count > 0:
         video_to_mp3 = True
+    if video_to_mp3:
+        is_ringtone = True
 
     total_credits_needed = max(0, total_tracks - 5) * 1
     if video_to_mp3 and video_count > 0:
@@ -1361,7 +1453,7 @@ def process_local_files():
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
     job_priority = 1 if payment_method == 'credits' else 0
 
-    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3)
+    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, start_time=start_time, end_time=end_time, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3, is_ringtone=is_ringtone)
     db.session.add(new_job)
     db.session.commit()
     return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
@@ -1476,7 +1568,8 @@ def start_conversion():
         increase_quality=increase_quality,
         organize_genre=organize_genre,
         auto_add_album_art=auto_add_album_art,
-        video_to_mp3=data.get('video_to_mp3', False)
+        video_to_mp3=data.get('video_to_mp3', False),
+        is_ringtone=data.get('is_ringtone', False) or data.get('video_to_mp3', False)
     )
     db.session.add(new_job)
     db.session.commit()
