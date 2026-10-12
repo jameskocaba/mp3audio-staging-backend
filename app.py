@@ -126,6 +126,7 @@ class User(db.Model):
     paid_track_credits = db.Column(db.Integer, default=0)
     stripe_customer_id = db.Column(db.String(120), nullable=True)
     subscription_active = db.Column(db.Boolean, default=False)
+    free_video_used = db.Column(db.Boolean, default=False)
 
 class ConversionJob(db.Model):
     id = db.Column(db.String(120), primary_key=True)
@@ -167,6 +168,7 @@ class ConversionJob(db.Model):
     auto_add_album_art = db.Column(db.Boolean, default=False)
     video_to_mp3 = db.Column(db.Boolean, default=False)
     is_ringtone = db.Column(db.Boolean, default=False)
+    free_video_used = db.Column(db.Boolean, default=False)
 
 class PopularURL(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -217,6 +219,7 @@ def initialize_database():
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS auto_add_album_art BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS video_to_mp3 BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS is_ringtone BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN IF NOT EXISTS free_video_used BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE popular_url ADD COLUMN IF NOT EXISTS thumbnail_url VARCHAR(500)'))
                     db.session.commit()
                 else: # Fallback for local SQLite testing
@@ -230,22 +233,27 @@ def initialize_database():
                     except: pass
                     try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN is_ringtone BOOLEAN DEFAULT FALSE'))
                     except: pass
+                    try: db.session.execute(text('ALTER TABLE conversion_job ADD COLUMN free_video_used BOOLEAN DEFAULT FALSE'))
+                    except: pass
                     try: db.session.execute(text('ALTER TABLE popular_url ADD COLUMN thumbnail_url VARCHAR(500)'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
                 logger.warning(f"Auto-migration skipped or failed: {e}")
                 
-            # Auto-migration for Stripe Subscription fields
+            # Auto-migration for Stripe Subscription fields and free video tracking
             try:
                 if 'postgresql' in app.config['SQLALCHEMY_DATABASE_URI']:
                     db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(120)'))
                     db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS subscription_active BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS free_video_used BOOLEAN DEFAULT FALSE'))
                     db.session.commit()
                 else:
                     try: db.session.execute(text('ALTER TABLE user ADD COLUMN stripe_customer_id VARCHAR(120)'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE user ADD COLUMN subscription_active BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE user ADD COLUMN free_video_used BOOLEAN DEFAULT FALSE'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
@@ -268,6 +276,8 @@ def initialize_database():
             if zombie_jobs:
                 for z_job in zombie_jobs:
                     user = User.query.get(z_job.user_id) if z_job.user_id else None
+                    if getattr(z_job, 'free_video_used', False) and z_job.completed == 0 and user:
+                        user.free_video_used = False
                     unused_tracks = z_job.total - z_job.completed
                     if user and unused_tracks > 0:
                         total_paid = max(0, z_job.total - 5) * 1
@@ -392,6 +402,10 @@ def cleanup_old_sessions():
             ).all()
             
             for job in stuck_jobs:
+                if getattr(job, 'free_video_used', False) and job.completed == 0:
+                    user_to_restore = User.query.get(job.user_id) if job.user_id else None
+                    if user_to_restore:
+                        user_to_restore.free_video_used = False
                 unused_tracks = job.total - job.completed
                 if unused_tracks > 0:
                     total_paid = max(0, job.total - 5) * 1
@@ -566,11 +580,21 @@ def get_current_user():
     user = get_or_create_user()
     is_guest = user.email.startswith('anon_')
     session_token = serializer.dumps(user.id, salt='user-session')
+    
+    has_used_free_video = getattr(user, 'free_video_used', False)
+    if not has_used_free_video:
+        prior_video_job = ConversionJob.query.filter_by(user_id=user.id, video_to_mp3=True).filter(ConversionJob.status.in_(['queued', 'processing', 'completed'])).first()
+        if prior_video_job:
+            has_used_free_video = True
+            user.free_video_used = True
+            db.session.commit()
+
     return jsonify({
         "authenticated": not is_guest,
         "email": None if is_guest else user.email,
         "paid_track_credits": user.paid_track_credits,
         "subscription_active": getattr(user, 'subscription_active', False),
+        "free_video_used": has_used_free_video,
         "token": session_token
     })
 
@@ -1315,9 +1339,14 @@ def run_conversion_task(session_id):
             
         except Exception as e:
             job = ConversionJob.query.get(session_id)
-            job.status = 'error'
-            job.error = str(e)
-            db.session.commit()
+            if job:
+                job.status = 'error'
+                job.error = str(e)
+                if getattr(job, 'free_video_used', False) and job.completed == 0:
+                    user_to_restore = User.query.get(job.user_id) if job.user_id else None
+                    if user_to_restore:
+                        user_to_restore.free_video_used = False
+                db.session.commit()
         finally:
             job = ConversionJob.query.get(session_id)
             if job and job.payment_method == 'credits':
@@ -1408,26 +1437,60 @@ def process_local_files():
     if video_to_mp3:
         is_ringtone = True
 
-    total_credits_needed = max(0, total_tracks - 5) * 1
+    # Check if user has already used their first free video to mp3 conversion
+    has_used_free_video = getattr(user, 'free_video_used', False)
+    if not has_used_free_video:
+        prior_video_job = ConversionJob.query.filter_by(user_id=user.id, video_to_mp3=True).filter(ConversionJob.status.in_(['queued', 'processing', 'completed'])).first()
+        if prior_video_job:
+            has_used_free_video = True
+            user.free_video_used = True
+            db.session.commit()
+
+    free_video_applied = False
+    payable_video_count = 0
+
     if video_to_mp3 and video_count > 0:
-        total_credits_needed += video_count * 5  # 5 credits per video file
-    elif video_to_mp3:
-        total_credits_needed += total_tracks * 5
+        if not has_used_free_video:
+            free_video_applied = True
+            payable_video_count = max(0, video_count - 1)
+        else:
+            payable_video_count = video_count
+    elif video_to_mp3 and video_count == 0:
+        if not has_used_free_video and total_tracks > 0:
+            free_video_applied = True
+            payable_video_count = max(0, total_tracks - 1)
+        else:
+            payable_video_count = total_tracks
+
+    total_credits_needed = max(0, total_tracks - 5) * 1
+    total_credits_needed += payable_video_count * 5
 
     if auto_add_album_art: total_credits_needed += max(0, total_tracks - 5) * 1
     if increase_quality: total_credits_needed += total_tracks * 1
     if attach_lyrics: total_credits_needed += total_tracks * 10
     
-    is_premium_job = attach_lyrics or increase_quality or (video_to_mp3 and video_count > 0)
+    is_premium_job = attach_lyrics or increase_quality or (payable_video_count > 0)
     
     payment_method = None
     if not is_premium_job and total_tracks <= 5:
         payment_method = 'always_free'
+        if free_video_applied:
+            user.free_video_used = True
+            db.session.commit()
     elif user.paid_track_credits >= total_credits_needed:
         user.paid_track_credits -= total_credits_needed
         payment_method = 'credits'
+        if free_video_applied:
+            user.free_video_used = True
+            db.session.commit()
     else:
-        error_detail = f"Video to MP3 conversion requires {total_credits_needed} credits ({video_count} video file(s) at 5 credits each)." if (video_to_mp3 and video_count > 0) else f"This action requires {total_credits_needed} credits."
+        if free_video_applied:
+            error_detail = f"Your first video is free! Converting {video_count} video file(s) requires {total_credits_needed} credits for the {payable_video_count} additional video(s) (5 credits each)."
+        elif video_to_mp3 and video_count > 0:
+            error_detail = f"Video to MP3 conversion requires {total_credits_needed} credits ({video_count} video file(s) at 5 credits each)."
+        else:
+            error_detail = f"This action requires {total_credits_needed} credits."
+
         return jsonify({
             "error": f"{error_detail} Please log in and purchase credits.", 
             "requires_payment": True
@@ -1453,7 +1516,7 @@ def process_local_files():
     queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
     job_priority = 1 if payment_method == 'credits' else 0
 
-    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, start_time=start_time, end_time=end_time, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3, is_ringtone=is_ringtone)
+    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, start_time=start_time, end_time=end_time, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3, is_ringtone=is_ringtone, free_video_used=free_video_applied)
     db.session.add(new_job)
     db.session.commit()
     return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
@@ -1622,15 +1685,21 @@ def cancel_conversion():
     job = ConversionJob.query.get(session_id)
     if job:
         job.status = 'cancelled'
+        if getattr(job, 'free_video_used', False) and job.completed == 0:
+            user_to_restore = User.query.get(job.user_id) if job.user_id else None
+            if user_to_restore:
+                user_to_restore.free_video_used = False
         
         unused_tracks = job.total - job.completed
         if unused_tracks > 0:
             total_paid = max(0, job.total - 5) * 1
+            if getattr(job, 'video_to_mp3', False): total_paid += job.total * 5
             if job.auto_add_album_art: total_paid += max(0, job.total - 5) * 1
             if job.increase_quality: total_paid += job.total * 1
             if job.transcribe_audio: total_paid += job.total * 10
             
             used_spent = max(0, job.completed - 5) * 1
+            if getattr(job, 'video_to_mp3', False): used_spent += job.completed * 5
             if job.auto_add_album_art: used_spent += max(0, job.completed - 5) * 1
             if job.increase_quality: used_spent += job.completed * 1
             if job.transcribe_audio: used_spent += job.completed * 10
