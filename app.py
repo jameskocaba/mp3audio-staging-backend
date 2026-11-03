@@ -2427,37 +2427,53 @@ def download_single_mp3(session_id):
 # WHATSAPP & TELEGRAM BOT WEBHOOKS + CONFIGURATION ENDPOINTS
 # ==============================================================================
 
+import html as _html_mod
+
 _RUNTIME_BOT_CONFIG = {
     "telegram_bot_token": os.environ.get('TELEGRAM_BOT_TOKEN', '').strip(),
-    "telegram_bot_username": os.environ.get('TELEGRAM_BOT_USERNAME', 'MP3audioBot').lstrip('@'),
+    "telegram_bot_username": os.environ.get('TELEGRAM_BOT_USERNAME', '').lstrip('@'),
     "telegram_phone": os.environ.get('TELEGRAM_PHONE_NUMBER', '').strip(),
     "whatsapp_number": os.environ.get('WHATSAPP_NUMBER', '').strip()
 }
 
+def _tg_esc(val):
+    return _html_mod.escape(str(val or ''))
+
 @app.route('/api/assistant/bot-info', methods=['GET'])
 def get_bot_info():
     tg_token = (_RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
-    tg_username = (_RUNTIME_BOT_CONFIG.get("telegram_bot_username") or os.environ.get('TELEGRAM_BOT_USERNAME') or 'MP3audioBot').lstrip('@')
+    tg_username = (_RUNTIME_BOT_CONFIG.get("telegram_bot_username") or os.environ.get('TELEGRAM_BOT_USERNAME') or '').lstrip('@')
     tg_phone = (_RUNTIME_BOT_CONFIG.get("telegram_phone") or os.environ.get('TELEGRAM_PHONE_NUMBER') or '').strip()
     tg_phone_clean = re.sub(r'[^\d+]', '', tg_phone)
     if tg_phone_clean and not tg_phone_clean.startswith('+'):
         tg_phone_clean = '+' + tg_phone_clean
 
+    # If a token is configured but username isn't cached yet, fetch it from Telegram getMe
+    if tg_token and not tg_username:
+        try:
+            me_resp = requests.get(f"https://api.telegram.org/bot{tg_token}/getMe", timeout=4)
+            if me_resp.status_code == 200:
+                tg_username = (me_resp.json().get("result") or {}).get("username") or ""
+                if tg_username:
+                    _RUNTIME_BOT_CONFIG["telegram_bot_username"] = tg_username
+        except Exception:
+            pass
+
+    display_username = tg_username or "MP3audioBot"
     wa_number = (_RUNTIME_BOT_CONFIG.get("whatsapp_number") or os.environ.get('WHATSAPP_NUMBER') or tg_phone or '').strip()
     wa_clean = re.sub(r'[^\d]', '', wa_number)
     wa_configured = bool(os.environ.get('WHATSAPP_ACCESS_TOKEN') or os.environ.get('TWILIO_AUTH_TOKEN') or wa_clean)
 
-    # Telegram supports direct phone-number deep links (https://t.me/+1234567890) OR bot username links (https://t.me/MP3audioBot)
-    tg_url = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else f"https://t.me/{tg_username}"
-    tg_handle_label = f"{tg_phone} (@{tg_username})" if tg_phone else f"@{tg_username}"
+    tg_url = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else f"https://t.me/{display_username}"
+    tg_handle_label = f"{tg_phone} (@{display_username})" if tg_phone else (f"@{display_username}" if (tg_token or tg_username) else "Tap to Connect Bot")
 
     base_api = PUBLIC_URL.rstrip('/')
     return jsonify({
         "telegram_bot_username": tg_handle_label,
         "telegram_phone": tg_phone,
         "telegram_url": tg_url,
-        "telegram_bot_url": f"https://t.me/{tg_username}",
-        "telegram_configured": bool(tg_token),
+        "telegram_bot_url": f"https://t.me/{display_username}",
+        "telegram_configured": bool(tg_token or tg_phone_clean),
         "whatsapp_number": wa_number or "+1 (555) MP3-AUDIO",
         "whatsapp_url": f"https://wa.me/{wa_clean}?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist" if wa_clean else "https://wa.me/?text=Check%20out%20MP3aud.io%20Music%20Assistant",
         "whatsapp_configured": wa_configured,
@@ -2469,7 +2485,7 @@ def get_bot_info():
 
 @app.route('/api/bot/setup-telegram', methods=['POST'])
 def setup_telegram_webhook():
-    """Registers the Telegram Bot Webhook URL (including Telegram Business phone number & callback buttons)."""
+    """Registers the Telegram Bot Webhook URL (embedding the token in the webhook path so all workers/restarts stay statelessly authenticated)."""
     data = request.json or {}
     bot_token = (data.get('bot_token') or _RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
     tg_phone = (data.get('telegram_phone') or '').strip()
@@ -2478,32 +2494,41 @@ def setup_telegram_webhook():
         _RUNTIME_BOT_CONFIG["whatsapp_number"] = tg_phone
 
     if not bot_token:
-        return jsonify({"error": "TELEGRAM_BOT_TOKEN is required (paste your BotFather token or set TELEGRAM_BOT_TOKEN in environment variables)."}), 400
+        return jsonify({"error": "Please paste your Telegram Bot Token from @BotFather first."}), 400
 
     _RUNTIME_BOT_CONFIG["telegram_bot_token"] = bot_token
 
     # Auto-detect the bot's @username from Telegram getMe API
+    detected_username = ""
     try:
         me_resp = requests.get(f"https://api.telegram.org/bot{bot_token}/getMe", timeout=6)
         if me_resp.status_code == 200:
             me_data = me_resp.json().get("result", {})
-            if me_data.get("username"):
-                _RUNTIME_BOT_CONFIG["telegram_bot_username"] = me_data["username"]
+            detected_username = me_data.get("username") or ""
+            if detected_username:
+                _RUNTIME_BOT_CONFIG["telegram_bot_username"] = detected_username
+        else:
+            return jsonify({"error": "Invalid Telegram Bot Token — please check the token from @BotFather."}), 400
     except Exception as e:
         logger.warning(f"Telegram getMe lookup warning: {e}")
 
-    webhook_url = (data.get('webhook_url') or f"{PUBLIC_URL.rstrip('/')}/webhook/telegram").strip()
+    # Embed bot_token in the webhook URL path so every Gunicorn worker and restart receives the token directly from Telegram!
+    default_webhook_url = f"{PUBLIC_URL.rstrip('/')}/webhook/telegram/{bot_token}"
+    webhook_url = (data.get('webhook_url') or default_webhook_url).strip()
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{bot_token}/setWebhook",
             json={
                 "url": webhook_url,
-                "allowed_updates": ["message", "edited_message", "business_message", "edited_business_message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "business_message", "edited_business_message", "callback_query"],
+                "drop_pending_updates": False
             },
             timeout=10
         )
         out = resp.json()
-        out["bot_username"] = f"@{_RUNTIME_BOT_CONFIG.get('telegram_bot_username', 'MP3audioBot')}"
+        final_user = detected_username or _RUNTIME_BOT_CONFIG.get('telegram_bot_username') or 'MP3audioBot'
+        out["bot_username"] = f"@{final_user}"
+        out["telegram_url"] = f"https://t.me/{final_user}"
         out["telegram_phone"] = _RUNTIME_BOT_CONFIG.get("telegram_phone", "")
         return jsonify(out), resp.status_code
     except Exception as e:
@@ -2519,14 +2544,27 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
     biz_params = {"business_connection_id": business_connection_id} if business_connection_id else {}
 
     try:
-        if text_msg.strip().lower() in ('/start', '/help', 'hi', 'hello', 'hey', 'menu'):
-            welcome = (
-                "🎧 *Welcome to MP3aud.io Personal Music Assistant!*\n\n"
-                "Text me right here in Telegram for any song, artist, or playlist mood — I'll reply directly in this chat with *playable audio tracks* and *1-click MP3/ZIP downloads*:\n\n"
-                "• *Playlist Curation:* _\"Send me a chill late-night synthwave playlist\"_\n"
-                "• *Fresh Mixes:* _\"Make me a new playlist\"_ or tap a button below\n"
-                "• *Any Song or Artist:* _\"Blinding Lights by The Weeknd\"_\n"
-                "• *Any Link:* Paste a YouTube, SoundCloud, or TikTok link to extract 320kbps MP3s!"
+        raw_clean = (text_msg or "").strip()
+        lower_clean = raw_clean.lower()
+
+        # Check if user tapped START with a deep-link payload (e.g. "/start synthwave")
+        if lower_clean.startswith('/start '):
+            deep_payload = raw_clean[7:].strip().replace('_', ' ')
+            if deep_payload and deep_payload.lower() not in ('start', 'help', 'menu'):
+                text_msg = deep_payload
+                lower_clean = text_msg.lower()
+            else:
+                lower_clean = '/start'
+
+        if lower_clean in ('/start', '/help', 'hi', 'hello', 'hey', 'menu', 'start'):
+            welcome_html = (
+                "🎧 <b>Welcome to MP3aud.io Personal Music Assistant!</b>\n\n"
+                "Text me right here in Telegram for any song, artist, or playlist mood — I'll reply directly in this chat with <b>playable audio tracks</b> and <b>1-click MP3/ZIP downloads</b>:\n\n"
+                "• <b>Playlist Curation:</b> <i>\"Send me a chill late-night synthwave playlist\"</i>\n"
+                "• <b>Fresh Mixes:</b> <i>\"Make me a new playlist\"</i> or tap a button below\n"
+                "• <b>Any Song or Artist:</b> <i>\"Blinding Lights by The Weeknd\"</i>\n"
+                "• <b>Any Link:</b> Paste a YouTube, SoundCloud, or TikTok link to extract 320kbps MP3s!\n\n"
+                "👇 <b>Tap a vibe below or type any request to start:</b>"
             )
             starter_kb = [
                 [
@@ -2540,8 +2578,8 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
             ]
             requests.post(f"{api_base}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": welcome,
-                "parse_mode": "Markdown",
+                "text": welcome_html,
+                "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": starter_kb},
                 **biz_params
             }, timeout=10)
@@ -2556,7 +2594,7 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
 
         curated = curate_music_response(text_msg)
         tracks = curated.get("tracks", [])
-        reply_text = curated.get("reply", "Here are your curated tracks!")
+        reply_text = re.sub(r'\*\*(.+?)\*\*', r'\1', curated.get("reply", "Here are your curated tracks!"))
         playlist_title = curated.get("playlist_title", "MP3aud.io Mix")
 
         # Queue a background ConversionJob so the user also gets a 1-click full 320kbps MP3/ZIP download link
@@ -2585,8 +2623,11 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         zip_download_url = f"{PUBLIC_URL.rstrip('/')}/download/{session_id}/playlist_backup.zip"
         single_mp3_url = f"{PUBLIC_URL.rstrip('/')}/download_mp3/{session_id}"
 
-        track_lines = "\n".join([f"{t['index']}. *{t['title']}* — {t['artist']} ({t['duration']})" for t in tracks[:6]])
-        summary_msg = f"🎵 *{playlist_title}*\n{reply_text}\n\n{track_lines}"
+        track_lines = "\n".join([
+            f"{t['index']}. <b>{_tg_esc(t['title'])}</b> — {_tg_esc(t['artist'])} ({_tg_esc(t['duration'])})"
+            for t in tracks[:6]
+        ])
+        summary_html = f"🎵 <b>{_tg_esc(playlist_title)}</b>\n{_tg_esc(reply_text)}\n\n{track_lines}"
 
         inline_kb = [
             [
@@ -2603,8 +2644,8 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
 
         requests.post(f"{api_base}/sendMessage", json={
             "chat_id": chat_id,
-            "text": summary_msg,
-            "parse_mode": "Markdown",
+            "text": summary_html,
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": inline_kb},
             **biz_params
         }, timeout=10)
@@ -2627,14 +2668,18 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
 
 
 @app.route('/webhook/telegram', methods=['POST'])
-def telegram_webhook():
+@app.route('/webhook/telegram/<path:url_bot_token>', methods=['POST'])
+def telegram_webhook(url_bot_token=None):
     """
     Incoming webhook for:
     1) Standard Telegram Bot messages (`message` / `edited_message`)
     2) Dedicated Phone Number via Telegram Business (`business_message` / `edited_business_message`)
     3) Interactive inline playlist buttons inside Telegram (`callback_query`)
     """
-    bot_token = (_RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    bot_token = (url_bot_token or _RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    if url_bot_token:
+        _RUNTIME_BOT_CONFIG["telegram_bot_token"] = bot_token
+
     payload = request.json or {}
     if not bot_token:
         return jsonify({"ok": True, "warning": "TELEGRAM_BOT_TOKEN not configured"}), 200
