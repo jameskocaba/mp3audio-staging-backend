@@ -1938,20 +1938,31 @@ def format_itunes_item(item, index=1):
         "search_query": f"ytsearch1:{artist} - {title} official audio"
     }
 
-def enrich_single_track(title, artist="", index=1):
+_ITUNES_TRACK_CACHE = {}
+_VIBE_ROTATION_IDX = [0]
+
+def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
     query = f"{artist} {title}".strip() if artist else title.strip()
+    cache_key = query.lower()
+    if cache_key in _ITUNES_TRACK_CACHE:
+        cached = dict(_ITUNES_TRACK_CACHE[cache_key])
+        cached["index"] = index
+        return cached
+
     try:
         resp = requests.get(
             "https://itunes.apple.com/search",
             params={"term": query, "media": "music", "entity": "song", "limit": 1},
-            timeout=5
+            timeout=timeout_sec
         )
         if resp.status_code == 200:
             results = resp.json().get("results", [])
             if results:
-                return format_itunes_item(results[0], index=index)
+                formatted = format_itunes_item(results[0], index=index)
+                _ITUNES_TRACK_CACHE[cache_key] = dict(formatted)
+                return formatted
     except Exception as e:
-        logger.warning(f"iTunes enrich failed for '{query}': {e}")
+        logger.warning(f"iTunes enrich fast fallback for '{query}': {e}")
 
     return {
         "index": index,
@@ -1967,12 +1978,43 @@ def enrich_single_track(title, artist="", index=1):
         "search_query": f"ytsearch1:{artist} - {title} official audio".strip()
     }
 
+def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
+    """Enriches a list of (title, artist) pairs with a strict time budget so requests never stall."""
+    started = time.time()
+    enriched = []
+    for idx, (t_title, t_artist) in enumerate(track_tuples):
+        elapsed = time.time() - started
+        remaining = max_total_seconds - elapsed
+        if remaining > 0.35:
+            enriched.append(enrich_single_track(t_title, t_artist, index=idx + 1, timeout_sec=min(1.2, remaining)))
+        else:
+            cache_key = f"{t_artist} {t_title}".strip().lower()
+            if cache_key in _ITUNES_TRACK_CACHE:
+                cached = dict(_ITUNES_TRACK_CACHE[cache_key])
+                cached["index"] = idx + 1
+                enriched.append(cached)
+            else:
+                enriched.append({
+                    "index": idx + 1,
+                    "title": t_title or f"Track {idx + 1}",
+                    "artist": t_artist or "Featured Artist",
+                    "album": "Curated Mix",
+                    "year": "2025",
+                    "genre": "Music",
+                    "duration": "3:30",
+                    "duration_sec": 210,
+                    "artwork_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
+                    "preview_url": "",
+                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip()
+                })
+    return enriched
+
 def search_itunes_multiple(term, limit=6):
     try:
         resp = requests.get(
             "https://itunes.apple.com/search",
             params={"term": term, "media": "music", "entity": "song", "limit": limit},
-            timeout=6
+            timeout=2.2
         )
         if resp.status_code == 200:
             results = resp.json().get("results", [])
@@ -1985,7 +2027,9 @@ def search_itunes_multiple(term, limit=6):
                 )
                 if key not in seen and item.get("trackName"):
                     seen.add(key)
-                    tracks.append(format_itunes_item(item, index=len(tracks) + 1))
+                    formatted = format_itunes_item(item, index=len(tracks) + 1)
+                    _ITUNES_TRACK_CACHE[f"{formatted['artist']} {formatted['title']}".lower()] = dict(formatted)
+                    tracks.append(formatted)
             return tracks
     except Exception as e:
         logger.warning(f"iTunes multi-search failed for '{term}': {e}")
@@ -2015,7 +2059,7 @@ def curate_music_response(user_message, history=None, options=None):
         tracks = []
         playlist_title = "Extracted Media Link"
         try:
-            with YoutubeDL({'extract_flat': True, 'quiet': True, 'playlistend': 15, 'nocheckcertificate': True, 'socket_timeout': 10}) as ydl:
+            with YoutubeDL({'extract_flat': True, 'quiet': True, 'playlistend': 15, 'nocheckcertificate': True, 'socket_timeout': 6}) as ydl:
                 info = ydl.extract_info(clean_url, download=False)
                 if info:
                     playlist_title = info.get('title') or playlist_title
@@ -2027,7 +2071,7 @@ def curate_music_response(user_message, history=None, options=None):
                         t_url = e.get('url') or e.get('webpage_url') or clean_url
                         if not str(t_url).startswith('http'):
                             t_url = clean_url
-                        enriched = enrich_single_track(t_title, t_artist, index=idx+1)
+                        enriched = enrich_single_track(t_title, t_artist, index=idx+1, timeout_sec=1.2)
                         enriched['search_query'] = t_url
                         if e.get('thumbnail') and not enriched.get('artwork_url'):
                             enriched['artwork_url'] = e['thumbnail']
@@ -2065,11 +2109,11 @@ def curate_music_response(user_message, history=None, options=None):
             "tracks": tracks
         }
 
-    # 2. Try OpenAI GPT-4o-mini / GPT-4o curation when configured
+    # 2. Try OpenAI GPT-4o-mini curation when configured (with strict 2.5s timeout)
     wants_playlist = any(w in msg_lower for w in [
         "playlist", "mix", "songs", "tracks", "vibe", "vibes", "mood", "music for",
         "workout", "chill", "study", "party", "late night", "throwback", "top ", "best ",
-        "similar to", "like ", "station", "radio", "list"
+        "similar to", "like ", "station", "radio", "list", "new ", "another ", "surprise"
     ])
 
     if client:
@@ -2086,7 +2130,7 @@ def curate_music_response(user_message, history=None, options=None):
                 "}\n"
                 "Rules:\n"
                 "- If the user asks for a single specific song or ringtone, return 1 track (or up to 3 if they ask for options).\n"
-                "- If the user asks for a playlist, vibe, mood, genre, or artist mix, return 6 curated real songs.\n"
+                "- If the user asks for a playlist, a new playlist, another playlist, vibe, mood, genre, or artist mix, return 6 fresh curated real songs that were not already listed in the conversation history.\n"
                 "- Output ONLY raw JSON."
             )
             messages_payload = [{"role": "system", "content": sys_prompt}]
@@ -2099,18 +2143,15 @@ def curate_music_response(user_message, history=None, options=None):
             completion = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages_payload,
-                temperature=0.6,
-                response_format={"type": "json_object"}
+                temperature=0.75,
+                response_format={"type": "json_object"},
+                timeout=2.5
             )
             parsed = json.loads(completion.choices[0].message.content)
             raw_tracks = parsed.get("tracks") or []
             if raw_tracks:
-                with ThreadPoolExecutor(max_workers=6) as pool:
-                    futures = [
-                        pool.submit(enrich_single_track, t.get("title", ""), t.get("artist", ""), idx + 1)
-                        for idx, t in enumerate(raw_tracks[:10])
-                    ]
-                    enriched_tracks = [f.result() for f in futures]
+                tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
+                enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=1.8)
                 return {
                     "success": True,
                     "reply": parsed.get("reply") or "Here are the tracks I curated for you! Tap play to listen in chat or download the MP3s below.",
@@ -2126,12 +2167,7 @@ def curate_music_response(user_message, history=None, options=None):
     # Check if message matches one of our rich vibe presets
     for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
         if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                futures = [
-                    pool.submit(enrich_single_track, t_title, t_artist, idx + 1)
-                    for idx, (t_title, t_artist) in enumerate(seed_list)
-                ]
-                enriched_tracks = [f.result() for f in futures]
+            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
             return {
                 "success": True,
                 "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
@@ -2143,18 +2179,44 @@ def curate_music_response(user_message, history=None, options=None):
 
     # Clean conversational filler words to extract the core artist / song / genre query
     cleaned_query = re.sub(
-        r'^(hey|hi|hello|yo|please|can you|could you|send me|play|find|get me|make me|create|give me|i want|i need|text me)\s+',
+        r'^(hey|hi|hello|yo|please|can you|could you|send me|play|find|get me|make me|create|give me|i want|i need|text me|build me|curate|generate|drop)\s+',
         '',
         msg,
         flags=re.IGNORECASE
     )
     cleaned_query = re.sub(
-        r'\b(a playlist of|a playlist for|playlist|songs by|tracks by|music by|ringtone of|ringtone for|ringtone|mp3|audio|song|track)\b',
+        r'\b(a new|another|a different|a fresh|a random|new|different|fresh|random|surprise|more|next|other)\s+(playlist|mix|songs|tracks|music|vibe|list)\b',
         ' ',
         cleaned_query,
         flags=re.IGNORECASE
     )
-    cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip() or msg
+    cleaned_query = re.sub(
+        r'\b(a playlist of|a playlist for|playlist|songs by|tracks by|music by|ringtone of|ringtone for|ringtone|mp3|audio|song|track|mix)\b',
+        ' ',
+        cleaned_query,
+        flags=re.IGNORECASE
+    )
+    cleaned_query = re.sub(r'^(a|an|some|the|me|for me|please|now)\b\s*', '', cleaned_query, flags=re.IGNORECASE)
+    cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip()
+
+    # If the user asked for a generic "new playlist" / "another playlist" / "surprise me", rotate to a fresh preset vibe
+    if not is_ringtone_req and (not cleaned_query or re.match(r'^(new|another|different|fresh|random|more|next|surprise|surprise me|something new|something else|anything|music|songs|tracks|vibe|vibes)$', cleaned_query, re.IGNORECASE)):
+        vibe_items = list(VIBE_PRESET_QUERIES.items())
+        chosen_idx = _VIBE_ROTATION_IDX[0] % len(vibe_items)
+        _VIBE_ROTATION_IDX[0] += 1
+        _, (p_title, p_vibe, seed_list) = vibe_items[chosen_idx]
+        enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+        return {
+            "success": True,
+            "reply": f"Here is a fresh **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
+            "mode": "playlist",
+            "playlist_title": p_title,
+            "playlist_vibe": p_vibe,
+            "tracks": enriched_tracks
+        }
+
+    if not cleaned_query:
+        cleaned_query = msg
 
     search_limit = 6 if wants_playlist else (1 if is_ringtone_req else 4)
     tracks = search_itunes_multiple(cleaned_query, limit=search_limit)
