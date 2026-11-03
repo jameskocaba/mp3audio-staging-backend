@@ -2230,12 +2230,20 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             "tracks": []
         }
 
-    # 2. Try OpenAI GPT-4o-mini curation when configured (with strict 2.5s timeout & warm human DJ persona)
-    wants_playlist = any(w in msg_lower for w in [
-        "playlist", "mix", "songs", "tracks", "vibe", "vibes", "mood", "music for",
-        "workout", "chill", "study", "party", "late night", "throwback", "top ", "best ",
-        "similar to", "like ", "station", "radio", "list", "new ", "another ", "surprise"
-    ])
+    # 2. Determine whether the user SPECIFICALLY asked for a playlist or a single track
+    wants_playlist = bool(
+        re.search(r'\b(playlist|playlists|mix|mixtape|tracklist|setlist|curate|volume\s*2|vol\.?\s*2)\b', msg_lower)
+        or re.search(r'\b(play|send|give|make|build|create|drop|put on|line up|queue|show|find|get)\b.*\b(songs|tracks|beats|music|anthems|hits|classics|jams)\b', msg_lower)
+        or re.search(r'^(top|best)\s+\d*\s*\w+', msg_lower)
+        or re.search(r'\b(songs|tracks)\s+(by|like|from|for)\s+', msg_lower)
+        or re.search(r'^(send|make|build|create|curate|give)\s+me\s+(a|an|some)\s+', msg_lower)
+        or re.search(r'\b(make it more upbeat|more upbeat|make it chiller|more chill|dial it back|keep this vibe going|surprise me)\b', msg_lower)
+    )
+    wants_single_track = bool(
+        is_ringtone_req
+        or re.search(r'^(play|send|send me|download|get me|find me|put on|listen to|stream)\s+', msg_lower)
+        or (re.search(r'\b(mp3|m4r)\b', msg_lower) and not re.search(r'\b(how|what|why|is|are|can)\b', msg_lower))
+    )
 
     if client:
         try:
@@ -2253,19 +2261,20 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 + current_tracks_context +
                 "Respond strictly in valid JSON with:\n"
                 "{\n"
-                '  "reply": "Warm, human 2-3 sentence conversational response answering their follow-up question, acknowledging how they feel, or explaining why these tracks fit",\n'
-                '  "follow_up_note": "Natural 1-sentence follow-up question asking how the vibe feels or offering a related musical direction",\n'
-                '  "playlist_title": "Catchy title for the track or playlist",\n'
-                '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle",\n'
+                '  "reply": "Warm, human 2-3 sentence conversational response",\n'
+                '  "follow_up_note": "Natural 1-sentence follow-up question",\n'
+                '  "playlist_title": "Catchy title for the track or playlist (if tracks requested)",\n'
+                '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle (if tracks requested)",\n'
                 '  "mode": "single" | "playlist" | "ringtone" | "chat",\n'
                 '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
                 "}\n"
                 "Rules:\n"
-                "- If the user asks a follow-up question about a track, artist, album, release year, music trivia, or how the site works without asking for new songs, answer warmly and accurately with mode='chat' and tracks=[].\n"
-                "- If the user is just chatting/saying hello/thanking you without asking for music yet, set mode='chat' and tracks=[].\n"
-                "- If the user shares how they feel (e.g. stressed, heartbroken, celebrating) or asks for a playlist/vibe/genre/artist mix, empathize like a real friend and return 6 fresh curated real songs.\n"
+                "- IMPORTANT: Do NOT provide a playlist every time! You can just have a normal, warm human conversation with the user (mode='chat', tracks=[]).\n"
+                "- Only return a playlist (6 tracks, mode='playlist') when the user SPECIFICALLY asks for a playlist, mix, or list of songs.\n"
+                "- If the user shares how their day went, how they feel, or talks about an artist/genre without asking for a playlist, just chat with them warmly like a real friend (mode='chat', tracks=[]) and mention they can ask for a playlist anytime.\n"
+                "- If the user asks a follow-up question about a track, artist, album, release year, music trivia, or how the site works, answer warmly with mode='chat' and tracks=[].\n"
                 "- If the user asks to swap/replace a specific track in the current playlist, return the updated 6-track list with that track replaced.\n"
-                "- If the user asks for a single specific song or ringtone, return 1 track.\n"
+                "- If the user asks to play/download a single specific song or ringtone, return 1 track.\n"
                 "- Output ONLY raw JSON."
             )
             messages_payload = [{"role": "system", "content": sys_prompt}]
@@ -2284,11 +2293,11 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             )
             parsed = json.loads(completion.choices[0].message.content)
             raw_tracks = parsed.get("tracks") or []
-            if parsed.get("mode") == "chat" and not raw_tracks:
+            if (parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track)):
                 return {
                     "success": True,
                     "mode": "chat",
-                    "reply": parsed.get("reply") or "Hey! Tell me what kind of mood you're in and I'll line up some great tracks for you.",
+                    "reply": parsed.get("reply") or "I love chatting with you! Tell me what's on your mind, or let me know whenever you'd like me to put together a playlist.",
                     "follow_up_note": parsed.get("follow_up_note") or "",
                     "tracks": []
                 }
@@ -2307,19 +2316,34 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         except Exception as ai_err:
             logger.warning(f"OpenAI music curation fell back to smart search: {ai_err}")
 
-    # 3. Smart Natural Language Fallback (Works 100% without OpenAI API key!)
-    # Check if message matches one of our rich vibe presets
-    for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
-        if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
-            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
-            return {
-                "success": True,
-                "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
-                "mode": "playlist",
-                "playlist_title": p_title,
-                "playlist_vibe": p_vibe,
-                "tracks": enriched_tracks
-            }
+    # 3. If the user did NOT specifically ask for a playlist or track, have a natural conversation (tracks=[])!
+    if not wants_playlist and not wants_single_track:
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "I hear you! 😊 We can just hang out and chat about your day, your favorite artists, or music trivia—and whenever you specifically want me to put together a playlist or pull up a song, just ask!",
+            "suggestions": [
+                "🎲 Tell me a cool music fact",
+                "🎤 Who are your favorite artists?",
+                "😂 Tell me a music joke",
+                "🎵 Make me a playlist"
+            ],
+            "tracks": []
+        }
+
+    # 4. Smart Natural Language Playlist/Track Curation (when explicitly requested!)
+    if wants_playlist:
+        for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
+            if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
+                enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+                return {
+                    "success": True,
+                    "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
+                    "mode": "playlist",
+                    "playlist_title": p_title,
+                    "playlist_vibe": p_vibe,
+                    "tracks": enriched_tracks
+                }
 
     # Clean conversational filler words to extract the core artist / song / genre query
     cleaned_query = re.sub(
@@ -2362,7 +2386,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
     if not cleaned_query:
         cleaned_query = msg
 
-    search_limit = 6 if wants_playlist else (1 if is_ringtone_req else 4)
+    search_limit = 6 if wants_playlist else 1
     tracks = search_itunes_multiple(cleaned_query, limit=search_limit)
 
     if not tracks:
