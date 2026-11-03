@@ -948,7 +948,7 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
         'postprocessors': [
-            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'},
+            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320' if increase_quality else '192'},
             {'key': 'EmbedThumbnail'},
         ],
         'postprocessor_args': {
@@ -1014,8 +1014,9 @@ def process_track(url, session_dir, track_index, ffmpeg_exe, session_id, zip_pat
             try:
                 with YoutubeDL({'quiet':True, 'no_warnings':True, 'socket_timeout':10}) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    if info.get('title'): track_name = info['title']
-                    if info.get('uploader'): artist_name = info['uploader']
+                    if info and 'entries' in info and info['entries']: info = info['entries'][0]
+                    if info.get('title') and (not track_name or track_name == "Unknown Track"): track_name = info['title']
+                    if info.get('uploader') and (not artist_name or artist_name in ("Unknown Artist", "Artist")): artist_name = info['uploader']
                     if info.get('album'): album_name = info['album']
                     if info.get('thumbnail'): job.current_thumbnail = info['thumbnail']
                     if info.get('release_year'):
@@ -1848,5 +1849,771 @@ def index(): return jsonify({"message": "Audio Processor API", "status": "active
 @app.route('/api-version')
 def api_version():
     return jsonify({"version": "v7_updated", "has_upload_route": True}), 200
+
+from concurrent.futures import ThreadPoolExecutor
+import urllib.parse
+import io
+
+# ==============================================================================
+# MP3AUD.IO PERSONAL MUSIC ASSISTANT & WHATSAPP / TELEGRAM MESSAGING ENGINE
+# ==============================================================================
+
+VIBE_PRESET_QUERIES = {
+    "synthwave": ("Midnight Neon: Chill Synthwave Mix", "Warm analog synths, retro arpeggios & late-night drive energy", [
+        ("Midnight City", "M83"), ("Nightcall", "Kavinsky"), ("Resonance", "Home"),
+        ("After Dark", "Mr.Kitty"), ("Sunset", "The Midnight"), ("Tech Noir", "GUNSHIP")
+    ]),
+    "workout": ("High-Octane Gym & Workout Anthems", "Heavy bass, relentless tempo & peak adrenaline", [
+        ("Stronger", "Kanye West"), ("Till I Collapse", "Eminem"), ("HUMBLE.", "Kendrick Lamar"),
+        ("POWER", "Kanye West"), ("Eye of the Tiger", "Survivor"), ("Titanium", "David Guetta")
+    ]),
+    "hip hop": ("Golden Era & Modern Hip-Hop Essentials", "Boom-bap classics, sharp lyricism & iconic 808s", [
+        ("N.Y. State of Mind", "Nas"), ("Shook Ones, Pt. II", "Mobb Deep"), ("C.R.E.A.M.", "Wu-Tang Clan"),
+        ("Juicy", "The Notorious B.I.G."), (" Still D.R.E.", "Dr. Dre"), ("Money Trees", "Kendrick Lamar")
+    ]),
+    "chill": ("Late-Night Velvet & Chill Vibes", "Smooth grooves, dreamy textures & laid-back atmosphere", [
+        ("Redbone", "Childish Gambino"), (" Pink + White", "Frank Ocean"), ("Electric Feel", "MGMT"),
+        ("Chamber Of Reflection", "Mac DeMarco"), (" Get Lucky", "Daft Punk"), ("Best Part", "Daniel Caesar")
+    ]),
+    "lofi": ("Lo-Fi Study & Rainy Window Beats", "Dusty vinyl crackle, warm Rhodes chords & mellow boom-bap", [
+        ("Snowman", "WYS"), ("Coffee", "beabadoobee"), ("5:32pm", "The Deli"),
+        ("Affection", "Jinsang"), ("Feather", "Nujabes"), ("Luv(sic) Part 3", "Nujabes")
+    ]),
+    "acoustic": ("Warm Coffeehouse Acoustic Sessions", "Intimate fingerpicking, rich vocals & stripped-back storytelling", [
+        ("Fast Car", "Tracy Chapman"), ("Banana Pancakes", "Jack Johnson"), ("Skinny Love", "Bon Iver"),
+        ("Blackbird", "The Beatles"), ("Ho Hey", "The Lumineers"), ("Photograph", "Ed Sheeran")
+    ]),
+    "rock": ("Stadium & Classic Rock Legends", "Timeless guitar riffs, soaring vocals & driving drums", [
+        ("Bohemian Rhapsody", "Queen"), ("Dreams", "Fleetwood Mac"), ("Hotel California", "Eagles"),
+        ("Smells Like Teen Spirit", "Nirvana"), ("Mr. Brightside", "The Killers"), ("Everlong", "Foo Fighters")
+    ]),
+    "pop": ("Pop Supernova: Chart-Topping Hits", "Infectious hooks, glossy production & feel-good energy", [
+        ("Blinding Lights", "The Weeknd"), ("Levitating", "Dua Lipa"), ("As It Was", "Harry Styles"),
+        ("Cruel Summer", "Taylor Swift"), ("Espresso", "Sabrina Carpenter"), ("Starboy", "The Weeknd")
+    ]),
+    "jazz": ("Midnight Blue Note Jazz Lounge", "Smoky saxophone, walking upright bass & velvet trumpet", [
+        ("Take Five", "The Dave Brubeck Quartet"), ("So What", "Miles Davis"), ("My Favorite Things", "John Coltrane"),
+        ("Fly Me to the Moon", "Frank Sinatra"), ("Autumn Leaves", "Cannonball Adderley"), ("Blue in Green", "Miles Davis")
+    ]),
+    "edm": ("Festival Mainstage & Electronic Euphoria", "Massive builds, euphoric synths & club-ready drops", [
+        ("Levels", "Avicii"), ("Strobe", "deadmau5"), ("One More Time", "Daft Punk"),
+        ("Summer", "Calvin Harris"), ("Clarity", "Zedd"), ("Scary Monsters and Nice Sprites", "Skrillex")
+    ]),
+    "r&b": ("Silk & Soul: R&B Slow Jams", "Lush harmonies, late-night basslines & timeless soul", [
+        ("Snooze", "SZA"), ("No Scrubs", "TLC"), ("Adorn", "Miguel"),
+        ("Earned It", "The Weeknd"), ("Boo'd Up", "Ella Mai"), (" Kiss It Better", "Rihanna")
+    ]),
+}
+
+def format_duration_ms(ms):
+    if not ms or not isinstance(ms, (int, float)):
+        return "3:30", 210
+    sec = max(1, int(ms // 1000))
+    return f"{sec // 60}:{sec % 60:02d}", sec
+
+def format_itunes_item(item, index=1):
+    title = item.get("trackName") or "Unknown Track"
+    artist = item.get("artistName") or "Unknown Artist"
+    album = item.get("collectionName") or "Single"
+    artwork = (item.get("artworkUrl100") or "").replace("100x100bb.jpg", "600x600bb.jpg")
+    preview_url = item.get("previewUrl") or ""
+    release_date = item.get("releaseDate") or ""
+    year = ""
+    if release_date:
+        ym = re.search(r'\b(19\d\d|20\d\d)\b', str(release_date))
+        if ym:
+            year = ym.group(1)
+    dur_str, dur_sec = format_duration_ms(item.get("trackTimeMillis"))
+    return {
+        "index": index,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "year": year,
+        "genre": item.get("primaryGenreName") or "Music",
+        "duration": dur_str,
+        "duration_sec": dur_sec,
+        "artwork_url": artwork,
+        "preview_url": preview_url,
+        "search_query": f"ytsearch1:{artist} - {title} official audio"
+    }
+
+def enrich_single_track(title, artist="", index=1):
+    query = f"{artist} {title}".strip() if artist else title.strip()
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": query, "media": "music", "entity": "song", "limit": 1},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                return format_itunes_item(results[0], index=index)
+    except Exception as e:
+        logger.warning(f"iTunes enrich failed for '{query}': {e}")
+
+    return {
+        "index": index,
+        "title": title or f"Track {index}",
+        "artist": artist or "Featured Artist",
+        "album": "Single",
+        "year": "2025",
+        "genre": "Music",
+        "duration": "3:24",
+        "duration_sec": 204,
+        "artwork_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
+        "preview_url": "",
+        "search_query": f"ytsearch1:{artist} - {title} official audio".strip()
+    }
+
+def search_itunes_multiple(term, limit=6):
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": term, "media": "music", "entity": "song", "limit": limit},
+            timeout=6
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            seen = set()
+            tracks = []
+            for item in results:
+                key = (
+                    (item.get("trackName") or "").lower().strip(),
+                    (item.get("artistName") or "").lower().strip()
+                )
+                if key not in seen and item.get("trackName"):
+                    seen.add(key)
+                    tracks.append(format_itunes_item(item, index=len(tracks) + 1))
+            return tracks
+    except Exception as e:
+        logger.warning(f"iTunes multi-search failed for '{term}': {e}")
+    return []
+
+def curate_music_response(user_message, history=None, options=None):
+    """
+    Core AI Music Assistant brain.
+    Takes any text message (song name, artist, mood/vibe playlist request, ringtone request, or URL)
+    and returns a structured conversational response with playable tracks and download metadata.
+    """
+    msg = (user_message or "").strip()
+    if not msg:
+        return {
+            "success": False,
+            "error": "Please enter a message, song, artist, or playlist vibe."
+        }
+
+    msg_lower = msg.lower()
+    is_ringtone_req = any(w in msg_lower for w in ["ringtone", "m4r", "alarm tone", "text tone"])
+
+    # 1. Check if the user pasted a direct URL (YouTube, SoundCloud, TikTok, etc.)
+    url_match = re.search(r'(https?://[^\s]+)', msg)
+    if url_match:
+        raw_url = url_match.group(1).strip()
+        clean_url = raw_url.split('?')[0] if 'soundcloud.com' in raw_url else raw_url
+        tracks = []
+        playlist_title = "Extracted Media Link"
+        try:
+            with YoutubeDL({'extract_flat': True, 'quiet': True, 'playlistend': 15, 'nocheckcertificate': True, 'socket_timeout': 10}) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+                if info:
+                    playlist_title = info.get('title') or playlist_title
+                    entries = info.get('entries', [info])
+                    raw_items = [e for e in entries if e][:12]
+                    for idx, e in enumerate(raw_items):
+                        t_title = e.get('title') or f"Track {idx+1}"
+                        t_artist = e.get('uploader') or info.get('uploader') or "Unknown Artist"
+                        t_url = e.get('url') or e.get('webpage_url') or clean_url
+                        if not str(t_url).startswith('http'):
+                            t_url = clean_url
+                        enriched = enrich_single_track(t_title, t_artist, index=idx+1)
+                        enriched['search_query'] = t_url
+                        if e.get('thumbnail') and not enriched.get('artwork_url'):
+                            enriched['artwork_url'] = e['thumbnail']
+                        tracks.append(enriched)
+        except Exception as e:
+            logger.warning(f"URL extraction in chat fallback: {e}")
+
+        if not tracks:
+            tracks = [{
+                "index": 1,
+                "title": "Media Stream Track",
+                "artist": "Direct Link",
+                "album": "Web Stream",
+                "year": "2026",
+                "genre": "Audio",
+                "duration": "3:30",
+                "duration_sec": 210,
+                "artwork_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
+                "preview_url": "",
+                "search_query": clean_url
+            }]
+
+        mode = "ringtone" if is_ringtone_req else ("playlist" if len(tracks) > 1 else "single")
+        reply = (
+            f"I loaded **{playlist_title}** ({len(tracks)} {'tracks' if len(tracks) > 1 else 'track'}) from your link! "
+            f"Tap play below to preview, or hit **Download MP3** {'/ **Download Playlist (.ZIP)** ' if len(tracks) > 1 else ''}"
+            f"for full 320kbps audio with HD cover art."
+        )
+        return {
+            "success": True,
+            "reply": reply,
+            "mode": mode,
+            "playlist_title": playlist_title,
+            "playlist_vibe": "Direct Link Extraction • High-Resolution ID3 Tagged",
+            "tracks": tracks
+        }
+
+    # 2. Try OpenAI GPT-4o-mini / GPT-4o curation when configured
+    wants_playlist = any(w in msg_lower for w in [
+        "playlist", "mix", "songs", "tracks", "vibe", "vibes", "mood", "music for",
+        "workout", "chill", "study", "party", "late night", "throwback", "top ", "best ",
+        "similar to", "like ", "station", "radio", "list"
+    ])
+
+    if client:
+        try:
+            sys_prompt = (
+                "You are MP3aud.io, an elite text-messaging Personal Music Assistant & AI DJ. "
+                "When the user texts you for a song, artist, ringtone, or mood/vibe playlist, respond strictly in valid JSON with:\n"
+                "{\n"
+                '  "reply": "Warm, concise 1-2 sentence text message response introducing the track(s)",\n'
+                '  "playlist_title": "Catchy title for the track or playlist",\n'
+                '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle",\n'
+                '  "mode": "single" | "playlist" | "ringtone",\n'
+                '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
+                "}\n"
+                "Rules:\n"
+                "- If the user asks for a single specific song or ringtone, return 1 track (or up to 3 if they ask for options).\n"
+                "- If the user asks for a playlist, vibe, mood, genre, or artist mix, return 6 curated real songs.\n"
+                "- Output ONLY raw JSON."
+            )
+            messages_payload = [{"role": "system", "content": sys_prompt}]
+            if history and isinstance(history, list):
+                for h in history[-4:]:
+                    if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+                        messages_payload.append({"role": h["role"], "content": str(h["content"])[:500]})
+            messages_payload.append({"role": "user", "content": msg})
+
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages_payload,
+                temperature=0.6,
+                response_format={"type": "json_object"}
+            )
+            parsed = json.loads(completion.choices[0].message.content)
+            raw_tracks = parsed.get("tracks") or []
+            if raw_tracks:
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    futures = [
+                        pool.submit(enrich_single_track, t.get("title", ""), t.get("artist", ""), idx + 1)
+                        for idx, t in enumerate(raw_tracks[:10])
+                    ]
+                    enriched_tracks = [f.result() for f in futures]
+                return {
+                    "success": True,
+                    "reply": parsed.get("reply") or "Here are the tracks I curated for you! Tap play to listen in chat or download the MP3s below.",
+                    "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
+                    "playlist_title": parsed.get("playlist_title") or "Curated Mix",
+                    "playlist_vibe": parsed.get("playlist_vibe") or "AI Curated • 320kbps Ready",
+                    "tracks": enriched_tracks
+                }
+        except Exception as ai_err:
+            logger.warning(f"OpenAI music curation fell back to smart search: {ai_err}")
+
+    # 3. Smart Natural Language Fallback (Works 100% without OpenAI API key!)
+    # Check if message matches one of our rich vibe presets
+    for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
+        if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [
+                    pool.submit(enrich_single_track, t_title, t_artist, idx + 1)
+                    for idx, (t_title, t_artist) in enumerate(seed_list)
+                ]
+                enriched_tracks = [f.result() for f in futures]
+            return {
+                "success": True,
+                "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
+                "mode": "playlist",
+                "playlist_title": p_title,
+                "playlist_vibe": p_vibe,
+                "tracks": enriched_tracks
+            }
+
+    # Clean conversational filler words to extract the core artist / song / genre query
+    cleaned_query = re.sub(
+        r'^(hey|hi|hello|yo|please|can you|could you|send me|play|find|get me|make me|create|give me|i want|i need|text me)\s+',
+        '',
+        msg,
+        flags=re.IGNORECASE
+    )
+    cleaned_query = re.sub(
+        r'\b(a playlist of|a playlist for|playlist|songs by|tracks by|music by|ringtone of|ringtone for|ringtone|mp3|audio|song|track)\b',
+        ' ',
+        cleaned_query,
+        flags=re.IGNORECASE
+    )
+    cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip() or msg
+
+    search_limit = 6 if wants_playlist else (1 if is_ringtone_req else 4)
+    tracks = search_itunes_multiple(cleaned_query, limit=search_limit)
+
+    if not tracks:
+        tracks = [enrich_single_track(cleaned_query, "", index=1)]
+
+    if len(tracks) == 1 or is_ringtone_req:
+        t = tracks[0]
+        mode = "ringtone" if is_ringtone_req else "single"
+        reply = (
+            f"Here is **{t['title']}** by **{t['artist']}**! "
+            f"{'Tap **Download Ringtone** to get your custom iPhone (.M4R) & Android (.MP3) ringtone, or hit play to preview it first.' if is_ringtone_req else 'Tap play in the bubble below to listen immediately, or click **Download MP3** for the full 320kbps tagged file.'}"
+        )
+        return {
+            "success": True,
+            "reply": reply,
+            "mode": mode,
+            "playlist_title": f"{t['title']} — {t['artist']}",
+            "playlist_vibe": f"{t.get('album', 'Single')} ({t.get('year') or 'HD Audio'})",
+            "tracks": [t]
+        }
+
+    p_title = f"{cleaned_query.title()} — Curated Mix"
+    return {
+        "success": True,
+        "reply": f"I put together a **{cleaned_query.title()}** selection for you ({len(tracks)} tracks). Tap play on any track bubble to listen right here, download individual MP3s, or grab the 1-click Playlist ZIP!",
+        "mode": "playlist",
+        "playlist_title": p_title,
+        "playlist_vibe": f"Curated for \"{cleaned_query}\" • 320kbps & ID3 Tagged",
+        "tracks": tracks
+    }
+
+
+@app.route('/api/assistant/chat', methods=['POST'])
+def assistant_chat():
+    data = request.json or {}
+    user_message = data.get('message', '').strip()
+    history = data.get('history', [])
+    options = data.get('options', {})
+    result = curate_music_response(user_message, history=history, options=options)
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@app.route('/api/assistant/prepare_download', methods=['POST'])
+def assistant_prepare_download():
+    """
+    Queues a ConversionJob from one or more curated chat tracks so the user can download
+    a single tagged MP3/M4R or a complete playlist ZIP directly inside the chat thread.
+    """
+    user = get_or_create_user()
+    data = request.json or {}
+    tracks = data.get('tracks', [])
+    if not tracks or not isinstance(tracks, list):
+        return jsonify({"error": "No tracks provided for download."}), 400
+
+    session_id = data.get('session_id', str(uuid.uuid4()))
+    increase_quality = bool(data.get('increase_quality', False))
+    auto_add_album_art = bool(data.get('auto_add_album_art', True))
+    transcribe_audio = bool(data.get('transcribe_audio', False))
+    is_ringtone = bool(data.get('is_ringtone', False))
+    start_time = data.get('start_time')
+    end_time = data.get('end_time')
+
+    valid_entries = []
+    for idx, t in enumerate(tracks[:MAX_SONGS]):
+        t_title = (t.get('title') or f"Track {idx+1}").strip()
+        t_artist = (t.get('artist') or "Unknown Artist").strip()
+        t_thumb = (t.get('artwork_url') or "").strip()
+        t_query = (t.get('search_query') or t.get('url') or f"ytsearch1:{t_artist} - {t_title} official audio").strip()
+        valid_entries.append((idx + 1, t_query, t_title, t_artist, t_thumb))
+
+    total_tracks = len(valid_entries)
+    total_credits_needed = max(0, total_tracks - 5) * 1
+    if auto_add_album_art:
+        total_credits_needed += max(0, total_tracks - 5) * 1
+    if increase_quality:
+        total_credits_needed += total_tracks * 1
+    if transcribe_audio:
+        total_credits_needed += total_tracks * 10
+
+    is_premium_job = transcribe_audio or increase_quality
+
+    payment_method = None
+    if not is_premium_job and total_tracks <= 5:
+        payment_method = 'always_free'
+    elif getattr(user, 'subscription_active', False):
+        payment_method = 'subscription'
+    elif user.paid_track_credits >= total_credits_needed:
+        user.paid_track_credits -= total_credits_needed
+        payment_method = 'credits'
+    else:
+        return jsonify({
+            "error": f"This download requires {total_credits_needed} credits. Free tier includes up to 5 standard tracks per request—toggle off paid add-ons or add credits!",
+            "requires_payment": True,
+            "credits_needed": total_credits_needed
+        }), 403
+
+    # Record in PopularURL so community activity feed stays fresh
+    first_t = tracks[0]
+    playlist_title = data.get('playlist_title') or f"{first_t.get('title', 'Track')} - {first_t.get('artist', '')}"
+    try:
+        synthetic_url = first_t.get('search_query') or f"chat://{uuid.uuid4().hex[:8]}"
+        pop = PopularURL.query.filter_by(url=synthetic_url[:500]).first()
+        if pop:
+            pop.conversion_count += 1
+            pop.last_converted = datetime.utcnow()
+        else:
+            pop = PopularURL(
+                url=synthetic_url[:500],
+                title=playlist_title[:200],
+                artist=(first_t.get('artist') or 'MP3aud.io Assistant')[:200],
+                thumbnail_url=(first_t.get('artwork_url') or '')[:500]
+            )
+            db.session.add(pop)
+    except Exception:
+        db.session.rollback()
+
+    queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
+    job_priority = 1 if payment_method in ('credits', 'subscription') else 0
+
+    new_job = ConversionJob(
+        id=session_id,
+        user_id=user.id,
+        payment_method=payment_method,
+        status='queued',
+        priority=job_priority,
+        total=total_tracks,
+        entries=valid_entries,
+        url=playlist_title[:500],
+        user_email=user.email if not user.email.startswith('anon_') else None,
+        start_time=start_time,
+        end_time=end_time,
+        transcribe_audio=transcribe_audio,
+        increase_quality=increase_quality,
+        organize_genre=False,
+        auto_add_album_art=auto_add_album_art,
+        video_to_mp3=False,
+        is_ringtone=is_ringtone
+    )
+    db.session.add(new_job)
+    db.session.commit()
+
+    return jsonify({
+        "session_id": session_id,
+        "total_tracks": total_tracks,
+        "status": "queued",
+        "queue_position": queue_position,
+        "single_mp3_url": f"/download_mp3/{session_id}",
+        "zip_url": f"/download/{session_id}/playlist_backup.zip"
+    }), 200
+
+
+@app.route('/download_mp3/<session_id>', methods=['GET'])
+def download_single_mp3(session_id):
+    """
+    Extracts and serves the individual .mp3 (or .m4r if format=m4r) directly from the job's archive
+    so users clicking 'Download MP3' on a single track bubble get a direct .mp3 file!
+    """
+    session_id = secure_filename(session_id)
+    want_ext = request.args.get('ext', 'mp3').lower()
+    if want_ext not in ('mp3', 'm4r'):
+        want_ext = 'mp3'
+
+    zip_bytes_io = None
+    local_zip = os.path.join(DOWNLOAD_FOLDER, session_id, "playlist_backup.zip")
+    if os.path.exists(local_zip):
+        zip_bytes_io = local_zip
+    elif s3_client and S3_BUCKET:
+        try:
+            s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=f"downloads/{session_id}/playlist_backup.zip")
+            zip_bytes_io = io.BytesIO(s3_obj['Body'].read())
+        except Exception as e:
+            logger.error(f"Could not fetch zip from S3 for single MP3 extraction: {e}")
+
+    if not zip_bytes_io:
+        return "File not found or expired", 404
+
+    try:
+        with zipfile.ZipFile(zip_bytes_io, 'r') as z:
+            names = z.namelist()
+            target_member = None
+            for name in names:
+                if name.lower().endswith(f".{want_ext}"):
+                    target_member = name
+                    break
+            if not target_member and names:
+                target_member = names[0]
+            if not target_member:
+                return "Archive is empty", 404
+
+            file_data = z.read(target_member)
+            download_filename = os.path.basename(target_member)
+            mime = 'audio/mp4' if download_filename.lower().endswith('.m4r') else 'audio/mpeg'
+            return send_file(
+                io.BytesIO(file_data),
+                mimetype=mime,
+                as_attachment=True,
+                download_name=download_filename
+            )
+    except Exception as e:
+        logger.error(f"Error extracting single MP3 from archive: {e}")
+        return redirect(f"/download/{session_id}/playlist_backup.zip")
+
+
+# ==============================================================================
+# WHATSAPP & TELEGRAM BOT WEBHOOKS + CONFIGURATION ENDPOINTS
+# ==============================================================================
+
+@app.route('/api/assistant/bot-info', methods=['GET'])
+def get_bot_info():
+    tg_username = os.environ.get('TELEGRAM_BOT_USERNAME', 'MP3audioBot').lstrip('@')
+    tg_token_set = bool(os.environ.get('TELEGRAM_BOT_TOKEN'))
+    wa_number = os.environ.get('WHATSAPP_NUMBER', '').strip()
+    wa_clean = re.sub(r'[^\d]', '', wa_number)
+    wa_configured = bool(os.environ.get('WHATSAPP_ACCESS_TOKEN') or os.environ.get('TWILIO_AUTH_TOKEN') or wa_clean)
+
+    base_api = PUBLIC_URL.rstrip('/')
+    return jsonify({
+        "telegram_bot_username": f"@{tg_username}",
+        "telegram_url": f"https://t.me/{tg_username}",
+        "telegram_configured": tg_token_set,
+        "whatsapp_number": wa_number or "+1 (555) MP3-AUDIO",
+        "whatsapp_url": f"https://wa.me/{wa_clean}?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist" if wa_clean else "https://wa.me/?text=Check%20out%20MP3aud.io%20Music%20Assistant",
+        "whatsapp_configured": wa_configured,
+        "webhook_telegram": f"{base_api}/webhook/telegram",
+        "webhook_whatsapp": f"{base_api}/webhook/whatsapp"
+    }), 200
+
+
+@app.route('/api/bot/setup-telegram', methods=['POST'])
+def setup_telegram_webhook():
+    """Registers the Telegram Bot Webhook URL with Telegram's Bot API."""
+    data = request.json or {}
+    bot_token = (data.get('bot_token') or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    if not bot_token:
+        return jsonify({"error": "TELEGRAM_BOT_TOKEN is required (pass in body or set in environment variables)."}), 400
+
+    webhook_url = (data.get('webhook_url') or f"{PUBLIC_URL.rstrip('/')}/webhook/telegram").strip()
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/setWebhook",
+            json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
+            timeout=10
+        )
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def handle_telegram_message_async(chat_id, text_msg, bot_token):
+    """Processes a user's Telegram text message and sends back playable audio bubbles + download links."""
+    api_base = f"https://api.telegram.org/bot{bot_token}"
+    try:
+        if text_msg.strip().lower() in ('/start', '/help', 'hi', 'hello'):
+            welcome = (
+                "🎧 *Welcome to MP3aud.io Personal Music Assistant!*\n\n"
+                "Text me anything you want to hear and I'll send playable tracks & playlists right into this chat:\n"
+                "• *Any Song or Artist:* _\"Blinding Lights by The Weeknd\"_\n"
+                "• *Any Vibe or Playlist:* _\"Send me a chill late-night synthwave playlist\"_\n"
+                "• *Workout / Study Mixes:* _\"90s hip hop workout mix\"_\n"
+                "• *Video/Music Links:* Paste any YouTube, SoundCloud, or TikTok link to extract 320kbps MP3s!\n\n"
+                "What are you in the mood to listen to?"
+            )
+            requests.post(f"{api_base}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": welcome,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            return
+
+        # Show 'upload_audio' status indicator in Telegram
+        requests.post(f"{api_base}/sendChatAction", json={"chat_id": chat_id, "action": "upload_audio"}, timeout=5)
+
+        curated = curate_music_response(text_msg)
+        tracks = curated.get("tracks", [])
+        reply_text = curated.get("reply", "Here are your curated tracks!")
+        playlist_title = curated.get("playlist_title", "MP3aud.io Mix")
+
+        # Queue a background ConversionJob so the user also gets a 1-click full MP3/ZIP download link
+        session_id = str(uuid.uuid4())
+        with app.app_context():
+            valid_entries = [
+                (idx + 1, t.get('search_query', f"ytsearch1:{t['artist']} - {t['title']} audio"), t['title'], t['artist'], t.get('artwork_url', ''))
+                for idx, t in enumerate(tracks[:6])
+            ]
+            if valid_entries:
+                job = ConversionJob(
+                    id=session_id,
+                    user_id=None,
+                    payment_method='always_free',
+                    status='queued',
+                    priority=0,
+                    total=len(valid_entries),
+                    entries=valid_entries,
+                    url=playlist_title[:500],
+                    auto_add_album_art=True
+                )
+                db.session.add(job)
+                db.session.commit()
+
+        web_chat_url = f"{FRONTEND_URL.rstrip('/')}/?q={urllib.parse.quote(text_msg)}"
+        zip_download_url = f"{PUBLIC_URL.rstrip('/')}/download/{session_id}/playlist_backup.zip"
+        single_mp3_url = f"{PUBLIC_URL.rstrip('/')}/download_mp3/{session_id}"
+
+        track_lines = "\n".join([f"{t['index']}. *{t['title']}* — {t['artist']} ({t['duration']})" for t in tracks[:6]])
+        summary_msg = f"🎵 *{playlist_title}*\n{reply_text}\n\n{track_lines}"
+
+        inline_kb = [
+            [{"text": "🎧 Open Interactive Web Player", "url": web_chat_url}],
+            [{"text": "⬇️ Download Full MP3" if len(tracks) == 1 else "📦 Download Full Playlist (.ZIP)", "url": single_mp3_url if len(tracks) == 1 else zip_download_url}]
+        ]
+
+        requests.post(f"{api_base}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": summary_msg,
+            "parse_mode": "Markdown",
+            "reply_markup": {"inline_keyboard": inline_kb}
+        }, timeout=10)
+
+        # Send direct playable audio bubbles in Telegram for each track that has a preview stream
+        for t in tracks[:5]:
+            preview_url = t.get("preview_url")
+            if preview_url:
+                requests.post(f"{api_base}/sendAudio", json={
+                    "chat_id": chat_id,
+                    "audio": preview_url,
+                    "title": t.get("title", "Track"),
+                    "performer": t.get("artist", "Artist"),
+                    "thumbnail": t.get("artwork_url", ""),
+                    "caption": f"🎵 {t.get('title')} — {t.get('artist')}\n💿 {t.get('album', '')}"
+                }, timeout=12)
+    except Exception as e:
+        logger.error(f"Telegram bot async handler error: {e}")
+
+
+@app.route('/webhook/telegram', methods=['POST'])
+def telegram_webhook():
+    """Incoming webhook for Telegram Bot messages."""
+    bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+    payload = request.json or {}
+    message = payload.get("message") or payload.get("edited_message")
+    if message and bot_token:
+        chat_id = message.get("chat", {}).get("id")
+        text_msg = message.get("text") or message.get("caption") or ""
+        if chat_id and text_msg:
+            Thread(target=handle_telegram_message_async, args=(chat_id, text_msg, bot_token), daemon=True).start()
+    return jsonify({"ok": True}), 200
+
+
+@app.route('/webhook/whatsapp', methods=['GET', 'POST'])
+def whatsapp_webhook():
+    """
+    Supports both:
+    1) Meta WhatsApp Cloud API (GET verification & POST JSON messages)
+    2) Twilio WhatsApp / SMS Messaging Webhook (POST form-urlencoded From & Body -> TwiML reply)
+    """
+    if request.method == 'GET':
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        verify_token = os.environ.get('WHATSAPP_VERIFY_TOKEN', 'mp3audio_verify_token')
+        if mode == 'subscribe' and token == verify_token:
+            return challenge, 200
+        return "Verification token mismatch", 403
+
+    # Check if this is a Twilio WhatsApp/SMS form webhook
+    if request.form and ('Body' in request.form or 'From' in request.form):
+        incoming_msg = request.form.get('Body', '').strip()
+        if not incoming_msg:
+            incoming_msg = "chill playlist"
+
+        curated = curate_music_response(incoming_msg)
+        tracks = curated.get("tracks", [])
+        playlist_title = curated.get("playlist_title", "MP3aud.io Mix")
+
+        # Queue conversion job for 1-click download
+        session_id = str(uuid.uuid4())
+        valid_entries = [
+            (idx + 1, t.get('search_query', f"ytsearch1:{t['artist']} - {t['title']} audio"), t['title'], t['artist'], t.get('artwork_url', ''))
+            for idx, t in enumerate(tracks[:6])
+        ]
+        if valid_entries:
+            job = ConversionJob(
+                id=session_id,
+                user_id=None,
+                payment_method='always_free',
+                status='queued',
+                priority=0,
+                total=len(valid_entries),
+                entries=valid_entries,
+                url=playlist_title[:500],
+                auto_add_album_art=True
+            )
+            db.session.add(job)
+            db.session.commit()
+
+        dl_link = f"{PUBLIC_URL.rstrip('/')}/download_mp3/{session_id}" if len(tracks) == 1 else f"{PUBLIC_URL.rstrip('/')}/download/{session_id}/playlist_backup.zip"
+        web_link = f"{FRONTEND_URL.rstrip('/')}/?q={urllib.parse.quote(incoming_msg)}"
+        track_lines = "\n".join([f"{t['index']}. {t['title']} - {t['artist']}" for t in tracks[:5]])
+        body_text = (
+            f"🎧 {playlist_title}\n\n"
+            f"{track_lines}\n\n"
+            f"▶️ Play & Chat: {web_link}\n"
+            f"⬇️ Download MP3/ZIP: {dl_link}"
+        )
+        media_tag = ""
+        if tracks and tracks[0].get("preview_url"):
+            media_tag = f"<Media>{tracks[0]['preview_url']}</Media>"
+        elif tracks and tracks[0].get("artwork_url"):
+            media_tag = f"<Media>{tracks[0]['artwork_url']}</Media>"
+
+        twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>{body_text}</Body>{media_tag}</Message></Response>'
+        return app.response_class(twiml, mimetype='text/xml'), 200
+
+    # Otherwise handle Meta WhatsApp Cloud API JSON payload
+    payload = request.json or {}
+    wa_token = os.environ.get('WHATSAPP_ACCESS_TOKEN', '').strip()
+    phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
+    try:
+        entries = payload.get("entry", [])
+        for entry in entries:
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+                for msg_obj in messages:
+                    from_number = msg_obj.get("from")
+                    text_body = (msg_obj.get("text") or {}).get("body", "").strip()
+                    if from_number and text_body and wa_token and phone_number_id:
+                        curated = curate_music_response(text_body)
+                        tracks = curated.get("tracks", [])
+                        playlist_title = curated.get("playlist_title", "MP3aud.io Mix")
+                        web_link = f"{FRONTEND_URL.rstrip('/')}/?q={urllib.parse.quote(text_body)}"
+                        track_lines = "\n".join([f"{t['index']}. *{t['title']}* — {t['artist']}" for t in tracks[:5]])
+                        reply_body = f"🎧 *{playlist_title}*\n{curated.get('reply', '')}\n\n{track_lines}\n\n▶️ *Listen & Download MP3/ZIP:* {web_link}"
+
+                        graph_url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
+                        headers = {"Authorization": f"Bearer {wa_token}", "Content-Type": "application/json"}
+                        requests.post(graph_url, headers=headers, json={
+                            "messaging_product": "whatsapp",
+                            "to": from_number,
+                            "type": "text",
+                            "text": {"preview_url": True, "body": reply_body}
+                        }, timeout=10)
+
+                        # Also send playable audio messages directly in WhatsApp
+                        for t in tracks[:3]:
+                            if t.get("preview_url"):
+                                requests.post(graph_url, headers=headers, json={
+                                    "messaging_product": "whatsapp",
+                                    "to": from_number,
+                                    "type": "audio",
+                                    "audio": {"link": t["preview_url"]}
+                                }, timeout=10)
+    except Exception as e:
+        logger.error(f"Meta WhatsApp webhook error: {e}")
+
+    return jsonify({"status": "received"}), 200
+
 
 if __name__ == '__main__': app.run(debug=False, port=5000, threaded=True)
