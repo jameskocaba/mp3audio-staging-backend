@@ -2035,10 +2035,10 @@ def search_itunes_multiple(term, limit=6):
         logger.warning(f"iTunes multi-search failed for '{term}': {e}")
     return []
 
-def curate_music_response(user_message, history=None, options=None):
+def curate_music_response(user_message, history=None, options=None, current_tracks=None):
     """
     Core AI Music Assistant brain.
-    Takes any text message (song name, artist, mood/vibe playlist request, ringtone request, or URL)
+    Takes any text message (song name, artist, mood/vibe playlist request, ringtone request, follow-up question, or URL)
     and returns a structured conversational response with playable tracks and download metadata.
     """
     msg = (user_message or "").strip()
@@ -2050,6 +2050,7 @@ def curate_music_response(user_message, history=None, options=None):
 
     msg_lower = msg.lower()
     is_ringtone_req = any(w in msg_lower for w in ["ringtone", "m4r", "alarm tone", "text tone"])
+    active_tracks = current_tracks if isinstance(current_tracks, list) else []
 
     # 1. Check if the user pasted a direct URL (YouTube, SoundCloud, TikTok, etc.)
     url_match = re.search(r'(https?://[^\s]+)', msg)
@@ -2152,6 +2153,83 @@ def curate_music_response(user_message, history=None, options=None):
             "tracks": []
         }
 
+    # 1.6 Check for follow-up questions about the current playlist, tracks, artist bios, release years, or how MP3aud.io works
+    if re.search(r'\b(how do i|how can i|how to)\b.*\b(download|save|zip|mp3|all|playlist)\b', msg_lower):
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "Super easy! 📥 For any single song, just tap the **MP3** button right inside its track card. If you want the whole playlist at once, tap **Download Full Playlist (.ZIP)** at the bottom of the mix and I'll bundle all the 320kbps MP3s with embedded HD album art into one ZIP file for you!",
+            "follow_up_note": "Want me to line up a playlist right now so you can try it out?",
+            "suggestions": [
+                "🎲 Curate a fresh playlist",
+                "📱 How do I make an iPhone ringtone?",
+                "✨ What audio quality are the MP3s?",
+                "🔥 Send me today's top hits"
+            ],
+            "tracks": []
+        }
+
+    if re.search(r'\b(how do i|how to|can i)\b.*\b(ringtone|m4r|iphone|android|alarm)\b', msg_lower):
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "To make a ringtone, either tap the **Ringtone** button on any track card in our chat, or toggle **Ringtone (.M4R / .MP3)** in the settings bar above! 🔔 I'll automatically trim the song to a 30-second hook and give you both an **iPhone (.M4R)** and **Android (.MP3)** file.",
+            "follow_up_note": "Which song would you love to hear every time your phone rings?",
+            "suggestions": [
+                "🔔 Make a Blinding Lights ringtone",
+                "🎸 Classic rock guitar riff ringtone",
+                "🎹 Chill lo-fi notification tone",
+                "🎲 Surprise me with a cool ringtone"
+            ],
+            "tracks": []
+        }
+
+    if active_tracks and re.search(r'\b(what year|when did|when was|release date|released|how old|what album|which album|who sings|who sang|who is the artist|who made|how long is)\b', msg_lower):
+        # Resolve referenced track by number or ordinal
+        ref_idx = 0
+        num_m = re.search(r'\b(?:track|song|number|#)\s*(\d+)\b', msg_lower)
+        if num_m:
+            idx_cand = int(num_m.group(1)) - 1
+            if 0 <= idx_cand < len(active_tracks):
+                ref_idx = idx_cand
+        elif "second" in msg_lower or "2nd" in msg_lower:
+            ref_idx = min(1, len(active_tracks) - 1)
+        elif "third" in msg_lower or "3rd" in msg_lower:
+            ref_idx = min(2, len(active_tracks) - 1)
+        elif "last" in msg_lower:
+            ref_idx = len(active_tracks) - 1
+
+        ref_t = active_tracks[ref_idx]
+        t_title = ref_t.get("title", "this track")
+        t_artist = ref_t.get("artist", "the artist")
+        t_album = ref_t.get("album", "Single Release")
+        t_year = ref_t.get("year") or "recent release"
+        t_genre = ref_t.get("genre") or "Music"
+        t_dur = ref_t.get("duration") or "3:30"
+
+        if "album" in msg_lower:
+            reply_text = f"**{t_title}** by **{t_artist}** is featured on the album **{t_album}** ({t_year}). 💿"
+        elif any(w in msg_lower for w in ["year", "when", "old", "release"]):
+            reply_text = f"**{t_title}** by **{t_artist}** was released in **{t_year}** on *{t_album}* ({t_genre}). 📅"
+        elif "how long" in msg_lower:
+            reply_text = f"**{t_title}** by **{t_artist}** runs **{t_dur}**, and the full {len(active_tracks)}-track mix is ready to stream or download below! ⏱️"
+        else:
+            reply_text = f"Track #{ref_idx + 1} is **{t_title}** performed by **{t_artist}** — from the {t_year} release *{t_album}* ({t_genre}). 🎤"
+
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": reply_text,
+            "follow_up_note": f"Want me to play a full mix of **{t_artist}**'s best songs or tell you more about them?",
+            "suggestions": [
+                f"🎵 Play more songs by {t_artist}",
+                f"💿 Songs from the {t_year} era",
+                f"🔥 Songs similar to {t_title}",
+                "🎲 Curate a new playlist"
+            ],
+            "tracks": []
+        }
+
     # 2. Try OpenAI GPT-4o-mini curation when configured (with strict 2.5s timeout & warm human DJ persona)
     wants_playlist = any(w in msg_lower for w in [
         "playlist", "mix", "songs", "tracks", "vibe", "vibes", "mood", "music for",
@@ -2161,21 +2239,32 @@ def curate_music_response(user_message, history=None, options=None):
 
     if client:
         try:
+            current_tracks_context = ""
+            if active_tracks:
+                formatted_active = "; ".join(
+                    f"#{i+1}: '{t.get('title')}' by {t.get('artist')} (Album: {t.get('album', 'Single')}, Year: {t.get('year', 'N/A')}, Duration: {t.get('duration', '3:30')})"
+                    for i, t in enumerate(active_tracks[:6])
+                )
+                current_tracks_context = f"\nCurrently displayed playlist tracks in the chat: {formatted_active}\n"
+
             sys_prompt = (
                 "You are MP3aud.io, a warm, empathetic, music-obsessed human friend and personal DJ. "
                 "Speak naturally, conversationally, and enthusiastically like a real person texting a friend—never robotic. "
+                + current_tracks_context +
                 "Respond strictly in valid JSON with:\n"
                 "{\n"
-                '  "reply": "Warm, human 2-3 sentence conversational response acknowledging how the user feels or why these tracks fit",\n'
-                '  "follow_up_note": "Natural 1-sentence follow-up question asking how the vibe feels or offering to adjust the tempo/mood",\n'
+                '  "reply": "Warm, human 2-3 sentence conversational response answering their follow-up question, acknowledging how they feel, or explaining why these tracks fit",\n'
+                '  "follow_up_note": "Natural 1-sentence follow-up question asking how the vibe feels or offering a related musical direction",\n'
                 '  "playlist_title": "Catchy title for the track or playlist",\n'
                 '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle",\n'
                 '  "mode": "single" | "playlist" | "ringtone" | "chat",\n'
                 '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
                 "}\n"
                 "Rules:\n"
+                "- If the user asks a follow-up question about a track, artist, album, release year, music trivia, or how the site works without asking for new songs, answer warmly and accurately with mode='chat' and tracks=[].\n"
                 "- If the user is just chatting/saying hello/thanking you without asking for music yet, set mode='chat' and tracks=[].\n"
                 "- If the user shares how they feel (e.g. stressed, heartbroken, celebrating) or asks for a playlist/vibe/genre/artist mix, empathize like a real friend and return 6 fresh curated real songs.\n"
+                "- If the user asks to swap/replace a specific track in the current playlist, return the updated 6-track list with that track replaced.\n"
                 "- If the user asks for a single specific song or ringtone, return 1 track.\n"
                 "- Output ONLY raw JSON."
             )
@@ -2312,7 +2401,8 @@ def assistant_chat():
     user_message = data.get('message', '').strip()
     history = data.get('history', [])
     options = data.get('options', {})
-    result = curate_music_response(user_message, history=history, options=options)
+    current_tracks = data.get('current_tracks', [])
+    result = curate_music_response(user_message, history=history, options=options, current_tracks=current_tracks)
     status_code = 200 if result.get("success") else 400
     return jsonify(result), status_code
 
