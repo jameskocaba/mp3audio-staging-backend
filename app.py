@@ -2109,7 +2109,50 @@ def curate_music_response(user_message, history=None, options=None):
             "tracks": tracks
         }
 
-    # 2. Try OpenAI GPT-4o-mini curation when configured (with strict 2.5s timeout)
+    # 1.5 Check pure conversational greetings, check-ins, or gratitude so we reply like a real human friend
+    if re.match(r'^(hi|hey|hello|yo|sup|what\'?s up|howdy|good morning|good afternoon|good evening)[!.?\s]*$', msg_lower):
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "Hey there! 👋 Good to hear from you—I'm right here in the booth lining up tracks. How's your day going? Tell me what kind of mood you're in, what you're up to right now, or drop an artist/song you love and I'll curate something special for you!",
+            "suggestions": [
+                "🌙 Chill late-night synthwave mix",
+                "🏋️ High-energy workout playlist",
+                "☕ Relaxing lo-fi beats while I work",
+                "🎲 Surprise me with your favorite songs"
+            ],
+            "tracks": []
+        }
+
+    if re.match(r'^(hey|hi|hello|yo)?\s*(how are you|how\'?s it going|how are things|what are you up to|wyd|you good)[!.?\s]*$', msg_lower):
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "I'm doing great, thanks for asking! 🎧 Just digging through the crates and queuing up some gems. How are *you* feeling today? Tell me if it's been a high-energy day, a long stressful one, or somewhere in between—I'll match the soundtrack to your exact mood.",
+            "suggestions": [
+                "🌿 Had a long day—help me unwind",
+                "🎉 Feeling great! Play something upbeat",
+                "🚗 Need a late-night driving soundtrack",
+                "🍷 Cooking dinner—play warm lounge vibes"
+            ],
+            "tracks": []
+        }
+
+    if re.match(r'^(thanks|thank you|thx|ty|appreciate it|love it|love this|this is fire|fire|awesome|amazing|great picks|so good|dope|nice|cool|perfect)[!.?\s]*$', msg_lower):
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": "Anytime! 🙌 Nothing makes me happier than when a mix hits just right. Want me to keep that exact wave rolling with a Volume 2, or should we switch up the tempo?",
+            "suggestions": [
+                "🔥 Keep this vibe going (Vol. 2)",
+                "⚡ Take the energy up a notch",
+                "🌙 Smooth it out & go mellower",
+                "🎲 Surprise me with a new genre"
+            ],
+            "tracks": []
+        }
+
+    # 2. Try OpenAI GPT-4o-mini curation when configured (with strict 2.5s timeout & warm human DJ persona)
     wants_playlist = any(w in msg_lower for w in [
         "playlist", "mix", "songs", "tracks", "vibe", "vibes", "mood", "music for",
         "workout", "chill", "study", "party", "late night", "throwback", "top ", "best ",
@@ -2119,18 +2162,21 @@ def curate_music_response(user_message, history=None, options=None):
     if client:
         try:
             sys_prompt = (
-                "You are MP3aud.io, an elite text-messaging Personal Music Assistant & AI DJ. "
-                "When the user texts you for a song, artist, ringtone, or mood/vibe playlist, respond strictly in valid JSON with:\n"
+                "You are MP3aud.io, a warm, empathetic, music-obsessed human friend and personal DJ. "
+                "Speak naturally, conversationally, and enthusiastically like a real person texting a friend—never robotic. "
+                "Respond strictly in valid JSON with:\n"
                 "{\n"
-                '  "reply": "Warm, concise 1-2 sentence text message response introducing the track(s)",\n'
+                '  "reply": "Warm, human 2-3 sentence conversational response acknowledging how the user feels or why these tracks fit",\n'
+                '  "follow_up_note": "Natural 1-sentence follow-up question asking how the vibe feels or offering to adjust the tempo/mood",\n'
                 '  "playlist_title": "Catchy title for the track or playlist",\n'
                 '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle",\n'
-                '  "mode": "single" | "playlist" | "ringtone",\n'
+                '  "mode": "single" | "playlist" | "ringtone" | "chat",\n'
                 '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
                 "}\n"
                 "Rules:\n"
-                "- If the user asks for a single specific song or ringtone, return 1 track (or up to 3 if they ask for options).\n"
-                "- If the user asks for a playlist, a new playlist, another playlist, vibe, mood, genre, or artist mix, return 6 fresh curated real songs that were not already listed in the conversation history.\n"
+                "- If the user is just chatting/saying hello/thanking you without asking for music yet, set mode='chat' and tracks=[].\n"
+                "- If the user shares how they feel (e.g. stressed, heartbroken, celebrating) or asks for a playlist/vibe/genre/artist mix, empathize like a real friend and return 6 fresh curated real songs.\n"
+                "- If the user asks for a single specific song or ringtone, return 1 track.\n"
                 "- Output ONLY raw JSON."
             )
             messages_payload = [{"role": "system", "content": sys_prompt}]
@@ -2149,15 +2195,24 @@ def curate_music_response(user_message, history=None, options=None):
             )
             parsed = json.loads(completion.choices[0].message.content)
             raw_tracks = parsed.get("tracks") or []
+            if parsed.get("mode") == "chat" and not raw_tracks:
+                return {
+                    "success": True,
+                    "mode": "chat",
+                    "reply": parsed.get("reply") or "Hey! Tell me what kind of mood you're in and I'll line up some great tracks for you.",
+                    "follow_up_note": parsed.get("follow_up_note") or "",
+                    "tracks": []
+                }
             if raw_tracks:
                 tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
                 enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=1.8)
                 return {
                     "success": True,
-                    "reply": parsed.get("reply") or "Here are the tracks I curated for you! Tap play to listen in chat or download the MP3s below.",
+                    "reply": parsed.get("reply") or "Here are the tracks I hand-picked for you! Tap play to listen right in our chat or grab the MP3s below.",
+                    "follow_up_note": parsed.get("follow_up_note") or "How does this vibe feel? Tell me if you want it more upbeat, mellower, or centered around a specific artist!",
                     "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
                     "playlist_title": parsed.get("playlist_title") or "Curated Mix",
-                    "playlist_vibe": parsed.get("playlist_vibe") or "AI Curated • 320kbps Ready",
+                    "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection • 320kbps Ready",
                     "tracks": enriched_tracks
                 }
         except Exception as ai_err:
