@@ -2279,7 +2279,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         or (re.search(r'\b(mp3|m4r)\b', msg_lower) and not re.search(r'\b(how|what|why|is|are|can)\b', msg_lower))
     )
 
-        ai_client, ai_model, supports_json = get_ai_client_and_model()
+    ai_client, ai_model, supports_json = get_ai_client_and_model()
     if ai_client:
         try:
             current_tracks_context = ""
