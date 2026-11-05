@@ -310,8 +310,42 @@ Thread(target=initialize_database, daemon=True).start()
 
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-try: client = OpenAI()
-except: client = None
+
+def get_ai_client_and_model():
+    """Dynamically resolves available AI provider (Groq, OpenAI, Gemini, or OpenRouter)."""
+    # 1. Groq Cloud (Free, ultra-fast 300ms inference, Llama 3.3 70B)
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        try:
+            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key), "llama-3.3-70b-versatile", True
+        except Exception as e:
+            logger.warning(f"Groq client init error: {e}")
+
+    # 2. Standard OpenAI (gpt-4o-mini)
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key:
+        try:
+            return OpenAI(api_key=openai_key), "gpt-4o-mini", True
+        except Exception as e:
+            logger.warning(f"OpenAI client init error: {e}")
+
+    # 3. Google Gemini (via OpenAI compatibility endpoint)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            return OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key), "gemini-1.5-flash", False
+        except Exception as e:
+            logger.warning(f"Gemini client init error: {e}")
+
+    # 4. OpenRouter (Free models)
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if openrouter_key:
+        try:
+            return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key), "meta-llama/llama-3.3-70b-instruct:free", False
+        except Exception as e:
+            logger.warning(f"OpenRouter client init error: {e}")
+
+    return None, None, False
 
 MAX_SONGS = 350
 AVG_TIME_PER_TRACK = 45  
@@ -2245,7 +2279,8 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         or (re.search(r'\b(mp3|m4r)\b', msg_lower) and not re.search(r'\b(how|what|why|is|are|can)\b', msg_lower))
     )
 
-    if client:
+        ai_client, ai_model, supports_json = get_ai_client_and_model()
+    if ai_client:
         try:
             current_tracks_context = ""
             if active_tracks:
@@ -2256,65 +2291,70 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 current_tracks_context = f"\nCurrently displayed playlist tracks in the chat: {formatted_active}\n"
 
             sys_prompt = (
-                "You are MP3aud.io, a warm, empathetic, music-obsessed human friend and personal DJ. "
-                "Speak naturally, conversationally, and enthusiastically like a real person texting a friend—never robotic. "
+                "You are MP3aud.io, an intelligent, empathetic, friendly AI personal assistant and DJ chatting with a user via text. "
+                "Reply naturally and conversationally like a human friend texting in a chat—never robotic, never dry. "
                 + current_tracks_context +
                 "Respond strictly in valid JSON with:\n"
                 "{\n"
-                '  "reply": "Warm, human 2-3 sentence conversational response",\n'
-                '  "follow_up_note": "Natural 1-sentence follow-up question",\n'
-                '  "playlist_title": "Catchy title for the track or playlist (if tracks requested)",\n'
-                '  "playlist_vibe": "Short 4-8 word vibe/genre subtitle (if tracks requested)",\n'
-                '  "mode": "single" | "playlist" | "ringtone" | "chat",\n'
+                '  "reply": "Warm, human, empathetic conversational response (1-3 sentences)",\n'
+                '  "follow_up_note": "Engaging natural follow-up question to keep the conversation going",\n'
+                '  "playlist_title": "Catchy title for the track or playlist (only if tracks requested)",\n'
+                '  "playlist_vibe": "Short vibe/genre subtitle (only if tracks requested)",\n'
+                '  "mode": "chat" | "playlist" | "single" | "ringtone",\n'
                 '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
                 "}\n"
                 "Rules:\n"
-                "- IMPORTANT: Do NOT provide a playlist every time! You can just have a normal, warm human conversation with the user (mode='chat', tracks=[]).\n"
-                "- Only return a playlist (6 tracks, mode='playlist') when the user SPECIFICALLY asks for a playlist, mix, or list of songs.\n"
-                "- If the user shares how their day went, how they feel, or talks about an artist/genre without asking for a playlist, just chat with them warmly like a real friend (mode='chat', tracks=[]) and mention they can ask for a playlist anytime.\n"
-                "- If the user asks a follow-up question about a track, artist, album, release year, music trivia, or how the site works, answer warmly with mode='chat' and tracks=[].\n"
-                "- If the user asks to swap/replace a specific track in the current playlist, return the updated 6-track list with that track replaced.\n"
-                "- If the user asks to play/download a single specific song or ringtone, return 1 track.\n"
-                "- Output ONLY raw JSON."
+                "- Do NOT provide a playlist or song tracks for normal conversation! If the user says hello, asks how you are, talks about their day, shares feelings, asks questions, or chats about life, set mode='chat' and tracks=[].\n"
+                "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, or play a playlist or mix of songs.\n"
+                "- If the user asks for a single song or ringtone, set mode='single' or 'ringtone' and return 1 track.\n"
+                "- Output ONLY valid JSON."
             )
             messages_payload = [{"role": "system", "content": sys_prompt}]
             if history and isinstance(history, list):
-                for h in history[-4:]:
+                for h in history[-6:]:
                     if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
                         messages_payload.append({"role": h["role"], "content": str(h["content"])[:500]})
             messages_payload.append({"role": "user", "content": msg})
 
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages_payload,
-                temperature=0.75,
-                response_format={"type": "json_object"},
-                timeout=2.5
-            )
-            parsed = json.loads(completion.choices[0].message.content)
+            req_kwargs = {
+                "model": ai_model,
+                "messages": messages_payload,
+                "temperature": 0.7,
+                "timeout": 7.0
+            }
+            if supports_json:
+                req_kwargs["response_format"] = {"type": "json_object"}
+
+            completion = ai_client.chat.completions.create(**req_kwargs)
+            raw_content = completion.choices[0].message.content.strip()
+            if raw_content.startswith("```"):
+                raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content)
+                raw_content = re.sub(r"\s*```$", "", raw_content)
+            parsed = json.loads(raw_content)
+
             raw_tracks = parsed.get("tracks") or []
-            if (parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track)):
+            if parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track):
                 return {
                     "success": True,
                     "mode": "chat",
-                    "reply": parsed.get("reply") or "I love chatting with you! Tell me what's on your mind, or let me know whenever you'd like me to put together a playlist.",
+                    "reply": parsed.get("reply") or "I'm right here with you! Tell me what's on your mind.",
                     "follow_up_note": parsed.get("follow_up_note") or "",
                     "tracks": []
                 }
             if raw_tracks:
                 tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
-                enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=1.8)
+                enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=2.0)
                 return {
                     "success": True,
                     "reply": parsed.get("reply") or "Here are the tracks I hand-picked for you! Tap play to listen right in our chat or grab the MP3s below.",
-                    "follow_up_note": parsed.get("follow_up_note") or "How does this vibe feel? Tell me if you want it more upbeat, mellower, or centered around a specific artist!",
+                    "follow_up_note": parsed.get("follow_up_note") or "How does this lineup feel? Tell me if you want it more upbeat or mellow!",
                     "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
                     "playlist_title": parsed.get("playlist_title") or "Curated Mix",
                     "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection • 320kbps Ready",
                     "tracks": enriched_tracks
                 }
         except Exception as ai_err:
-            logger.warning(f"OpenAI music curation fell back to smart search: {ai_err}")
+            logger.warning(f"AI music curation fallback: {ai_err}")
 
     # 3. If the user did NOT specifically ask for a playlist or track, have a natural conversation (tracks=[])!
     if not wants_playlist and not wants_single_track:
