@@ -311,8 +311,20 @@ Thread(target=initialize_database, daemon=True).start()
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def get_ai_client_and_model():
+def get_ai_client_and_model(custom_key=None):
     """Dynamically resolves available AI provider (Groq, OpenAI, Gemini, or OpenRouter)."""
+    # 0. User-provided key (passed via X-AI-Key header or request body)
+    if custom_key and isinstance(custom_key, str) and custom_key.strip():
+        k = custom_key.strip()
+        if k.startswith("gsk_"):
+            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=k), "llama-3.3-70b-versatile", True
+        elif k.startswith("sk-or-"):
+            return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=k), "meta-llama/llama-3.3-70b-instruct:free", False
+        elif k.startswith("AIza"):
+            return OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=k), "gemini-1.5-flash", False
+        else:
+            return OpenAI(api_key=k), "gpt-4o-mini", True
+
     # 1. Groq Cloud (Free, ultra-fast 300ms inference, Llama 3.3 70B)
     groq_key = os.environ.get("GROQ_API_KEY", "").strip()
     if groq_key:
@@ -2279,7 +2291,10 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         or (re.search(r'\b(mp3|m4r)\b', msg_lower) and not re.search(r'\b(how|what|why|is|are|can)\b', msg_lower))
     )
 
-    ai_client, ai_model, supports_json = get_ai_client_and_model()
+    custom_key = request.headers.get("X-AI-Key") or request.headers.get("X-Groq-Key")
+    if not custom_key and request.is_json:
+        custom_key = (request.json or {}).get("ai_key")
+    ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
     if ai_client:
         try:
             current_tracks_context = ""
@@ -2292,11 +2307,13 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
             sys_prompt = (
                 "You are MP3aud.io, an intelligent, empathetic, friendly AI personal assistant and DJ chatting with a user via text. "
-                "Reply naturally and conversationally like a human friend texting in a chat—never robotic, never dry. "
+                "Answer the user's specific questions directly, accurately, and conversationally like a human friend texting in a chat—never robotic, never dry. "
+                "If the user asks questions about science, daily life, how things work, advice, jokes, or conversation, answer thoroughly and warmly! "
+                "If the user asks music questions (artists, release years, albums, genres), provide rich insights. "
                 + current_tracks_context +
                 "Respond strictly in valid JSON with:\n"
                 "{\n"
-                '  "reply": "Warm, human, empathetic conversational response (1-3 sentences)",\n'
+                '  "reply": "Direct, helpful, warm response to their specific question or message (1-3 sentences)",\n'
                 '  "follow_up_note": "Engaging natural follow-up question to keep the conversation going",\n'
                 '  "playlist_title": "Catchy title for the track or playlist (only if tracks requested)",\n'
                 '  "playlist_vibe": "Short vibe/genre subtitle (only if tracks requested)",\n'
@@ -2356,18 +2373,39 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         except Exception as ai_err:
             logger.warning(f"AI music curation fallback: {ai_err}")
 
-    # 3. If the user did NOT specifically ask for a playlist or track, have a natural conversation (tracks=[])!
+    # 3. Intelligent Fallback (Answers user questions via Wikipedia & music intelligence if no LLM key is configured)
     if not wants_playlist and not wants_single_track:
+        music_lookup_target = re.sub(r'^(who is|who are|tell me about|what is|what are|do you know|can you tell me about)\s+', '', msg_lower).strip(' ?.!')
+        wiki_snippet = None
+        if music_lookup_target and len(music_lookup_target.split()) <= 4:
+            try:
+                from urllib.parse import quote_plus
+                w_resp = requests.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(music_lookup_target)}", timeout=1.8)
+                if w_resp.ok:
+                    w_data = w_resp.json()
+                    wiki_snippet = w_data.get("extract")
+            except Exception:
+                pass
+
+        if wiki_snippet:
+            reply_text = f"**{music_lookup_target.title()}**: {wiki_snippet[:350]}...\n\nWant me to curate a 6-track mix featuring their best songs?"
+        elif any(q in msg_lower for q in ["who are you", "what can you do", "help", "how do you work"]):
+            reply_text = "I'm your **AI Personal Assistant & Music DJ** on MP3aud.io! 🎧 I can answer questions, chat with you like a friend, curate 6-track playlists for any mood, or extract 320kbps MP3s and ringtones.\n\nWhat's on your mind or what would you like to listen to?"
+        elif any(q in msg_lower for q in ["how are you", "how's it going", "hows it going", "how do you do"]):
+            reply_text = "I'm doing great, thanks for asking! 🎧 Just hanging out in the studio listening to some records. How's your day going?"
+        elif any(q in msg_lower for q in ["weather", "forecast", "rain", "sunny", "temperature"]):
+            reply_text = "I don't have live satellite radar in the studio booth, but it's always a comfortable 72° in here with good tunes playing! ☀️ How is the weather looking outside your window?"
+        elif any(q in msg_lower for q in ["joke", "funny", "laugh"]):
+            reply_text = "😂 Why did the synthesizer break up with the acoustic guitar?\n\nBecause they just couldn't find the right *frequency*—and the guitar had way too many *strings* attached! 🎹🎸"
+        elif any(q in msg_lower for q in ["fact", "trivia"]):
+            reply_text = "🎲 **Music Fact:** Prince played **all 27 instruments** on his 1978 debut album *For You*—including synths, guitars, bass, drums, and every layer of vocal harmony! Did you know that?"
+        else:
+            reply_text = "I hear you! 😊 We can chat about whatever is on your mind, explore favorite artists, or whenever you want me to put together a playlist, just say the word."
+
         return {
             "success": True,
             "mode": "chat",
-            "reply": "I hear you! 😊 We can just hang out and chat about your day, your favorite artists, or music trivia—and whenever you specifically want me to put together a playlist or pull up a song, just ask!",
-            "suggestions": [
-                "🎲 Tell me a cool music fact",
-                "🎤 Who are your favorite artists?",
-                "😂 Tell me a music joke",
-                "🎵 Make me a playlist"
-            ],
+            "reply": reply_text,
             "tracks": []
         }
 
