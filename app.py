@@ -575,10 +575,11 @@ def health_check():
 
 @app.route('/api/test_groq', methods=['GET', 'POST'])
 def test_groq():
+    groq_related_env = [k for k in os.environ.keys() if 'groq' in k.lower() or 'ai' in k.lower()]
     custom_key = request.headers.get("X-AI-Key") or request.args.get("key")
     client, model, supports_json = get_ai_client_and_model(custom_key)
     if not client:
-        return jsonify({"success": False, "error": "No AI client available. Check GROQ_API_KEY."}), 200
+        return jsonify({"success": False, "error": "No AI client available.", "found_env_keys": groq_related_env}), 200
     try:
         completion = client.chat.completions.create(
             model=model,
