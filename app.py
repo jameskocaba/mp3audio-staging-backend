@@ -573,6 +573,33 @@ def health_check():
     return jsonify({"status": "healthy", "has_groq": has_groq, "has_openai": has_openai}), 200
 
 @app.route('/auth/login', methods=['POST'])
+
+@app.route('/api/test_groq', methods=['GET', 'POST'])
+def test_groq():
+    custom_key = request.headers.get("X-AI-Key") or request.args.get("key")
+    client, model, supports_json = get_ai_client_and_model(custom_key)
+    if not client:
+        return jsonify({"success": False, "error": "No AI client available. Check GROQ_API_KEY."}), 200
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say hello in 5 words."}],
+            max_tokens=30,
+            timeout=12.0
+        )
+        return jsonify({
+            "success": True,
+            "model": model,
+            "reply": completion.choices[0].message.content
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "model": model,
+            "error_type": type(e).__name__,
+            "error_msg": str(e)
+        }), 200
+
 def send_magic_link():
     email = request.json.get('email', '').strip().lower()
     if not email: return jsonify({"error": "Email is required"}), 400
@@ -2348,12 +2375,27 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             if supports_json:
                 req_kwargs["response_format"] = {"type": "json_object"}
 
-            completion = ai_client.chat.completions.create(**req_kwargs)
+            try:
+                completion = ai_client.chat.completions.create(**req_kwargs)
+            except Exception as first_err:
+                logger.warning(f"AI primary attempt ({ai_model}) failed: {first_err}, retrying...")
+                req_kwargs.pop("response_format", None)
+                if "llama" in str(ai_model):
+                    req_kwargs["model"] = "llama-3.1-8b-instant"
+                completion = ai_client.chat.completions.create(**req_kwargs)
+
             raw_content = completion.choices[0].message.content.strip()
             if raw_content.startswith("```"):
                 raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content)
                 raw_content = re.sub(r"\s*```$", "", raw_content)
-            parsed = json.loads(raw_content)
+            try:
+                parsed = json.loads(raw_content)
+            except Exception:
+                parsed = {
+                    "mode": "chat",
+                    "reply": raw_content,
+                    "tracks": []
+                }
 
             raw_tracks = parsed.get("tracks") or []
             if parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track):
