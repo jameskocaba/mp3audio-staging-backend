@@ -572,7 +572,6 @@ def health_check():
     has_openai = bool(os.environ.get("OPENAI_API_KEY", "").strip())
     return jsonify({"status": "healthy", "has_groq": has_groq, "has_openai": has_openai}), 200
 
-@app.route('/auth/login', methods=['POST'])
 
 @app.route('/api/test_groq', methods=['GET', 'POST'])
 def test_groq():
@@ -600,6 +599,7 @@ def test_groq():
             "error_msg": str(e)
         }), 200
 
+@app.route('/auth/login', methods=['POST'])
 def send_magic_link():
     email = request.json.get('email', '').strip().lower()
     if not email: return jsonify({"error": "Email is required"}), 400
