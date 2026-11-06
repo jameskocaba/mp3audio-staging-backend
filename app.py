@@ -2485,8 +2485,6 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection â€¢ 320kbps Ready",
                 "tracks": enriched_tracks
             }
-        except Exception as ai_err:
-            logger.warning(f"AI music curation fallback: {ai_err}")
 
     # 3. Intelligent Fallback (Answers user questions via Wikipedia Search, Weather, & conversational AI if no LLM key is configured)
     if not wants_playlist and not wants_single_track:
