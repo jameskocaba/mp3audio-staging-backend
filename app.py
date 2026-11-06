@@ -314,7 +314,7 @@ Thread(target=initialize_database, daemon=True).start()
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def call_groq_direct(messages, api_key, model="llama-3.1-8b-instant", timeout_sec=8.0, force_json=False):
+def call_groq_direct(messages, api_key, model="openai/gpt-oss-120b", timeout_sec=8.0, force_json=False):
     """
     Direct HTTPS caller for Groq Cloud API.
     Bypasses httpx/openai SDK version conflicts completely using standard requests.
@@ -329,7 +329,7 @@ def call_groq_direct(messages, api_key, model="llama-3.1-8b-instant", timeout_se
     }
     
     candidate_models = [model] if model else []
-    candidate_models += ["llama-3.1-8b-instant", "llama3-8b-8192", "mixtral-8x7b-32768"]
+    candidate_models += ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "allam-2-7b", "llama-3.1-8b-instant"]
     seen = set()
     models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
@@ -354,6 +354,40 @@ def call_groq_direct(messages, api_key, model="llama-3.1-8b-instant", timeout_se
         except Exception as e:
             logger.warning(f"Groq direct call exception with {candidate}: {e}")
 
+    return None
+
+def call_openai_direct(messages, api_key, model="gpt-4o-mini", timeout_sec=8.0, force_json=False):
+    """
+    Direct HTTPS caller for OpenAI API.
+    Bypasses httpx/openai SDK version conflicts completely.
+    """
+    clean_key = (api_key or "").strip().strip("`'\"")
+    if not clean_key:
+        return None
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {clean_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
+    if force_json:
+        payload["response_format"] = {"type": "json_object"}
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+        if resp.ok:
+            data = resp.json()
+            choices = data.get("choices", [])
+            if choices and choices[0].get("message"):
+                return choices[0]["message"].get("content", "").strip()
+        else:
+            logger.warning(f"OpenAI direct call returned status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.warning(f"OpenAI direct call exception: {e}")
     return None
 
 def get_ai_client_and_model(custom_key=None):
@@ -636,17 +670,16 @@ def test_groq():
     except Exception:
         available_models = []
 
-    # 2. Pick the best working chat model
+    # 2. Pick the best working chat model from what the account supports
     candidate_models = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-70b-versatile",
-        "llama3-70b-8192",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "allam-2-7b",
         "llama-3.1-8b-instant",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it"
+        "llama-3.3-70b-versatile"
     ]
-    model_to_use = "llama-3.1-8b-instant"
+    model_to_use = "openai/gpt-oss-120b"
     for m in candidate_models:
         if m in available_models:
             model_to_use = m
@@ -2447,9 +2480,14 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     raw_content = None
     if groq_key:
-        raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.1-8b-instant", timeout_sec=8.0, force_json=True)
+        raw_content = call_groq_direct(messages_payload, groq_key, model="openai/gpt-oss-120b", timeout_sec=8.0, force_json=True)
         if not raw_content:
-            raw_content = call_groq_direct(messages_payload, groq_key, model="llama3-8b-8192", timeout_sec=6.0, force_json=True)
+            raw_content = call_groq_direct(messages_payload, groq_key, model="qwen/qwen3.8-27b", timeout_sec=6.0, force_json=True)
+
+    if not raw_content:
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip().strip("`'\"")
+        if openai_key:
+            raw_content = call_openai_direct(messages_payload, openai_key, model="gpt-4o-mini", timeout_sec=8.0, force_json=True)
 
     if not raw_content:
         ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
