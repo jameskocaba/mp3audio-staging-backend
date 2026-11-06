@@ -2373,34 +2373,75 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         except Exception as ai_err:
             logger.warning(f"AI music curation fallback: {ai_err}")
 
-    # 3. Intelligent Fallback (Answers user questions via Wikipedia & music intelligence if no LLM key is configured)
+    # 3. Intelligent Fallback (Answers user questions via Wikipedia Search, Weather, & conversational AI if no LLM key is configured)
     if not wants_playlist and not wants_single_track:
-        music_lookup_target = re.sub(r'^(who is|who are|tell me about|what is|what are|do you know|can you tell me about)\s+', '', msg_lower).strip(' ?.!')
-        wiki_snippet = None
-        if music_lookup_target and len(music_lookup_target.split()) <= 4:
-            try:
-                from urllib.parse import quote_plus
-                w_resp = requests.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(music_lookup_target)}", timeout=1.8)
-                if w_resp.ok:
-                    w_data = w_resp.json()
-                    wiki_snippet = w_data.get("extract")
-            except Exception:
-                pass
+        reply_text = None
 
-        if wiki_snippet:
-            reply_text = f"**{music_lookup_target.title()}**: {wiki_snippet[:350]}...\n\nWant me to curate a 6-track mix featuring their best songs?"
-        elif any(q in msg_lower for q in ["who are you", "what can you do", "help", "how do you work"]):
-            reply_text = "I'm your **AI Personal Assistant & Music DJ** on MP3aud.io! 🎧 I can answer questions, chat with you like a friend, curate 6-track playlists for any mood, or extract 320kbps MP3s and ringtones.\n\nWhat's on your mind or what would you like to listen to?"
-        elif any(q in msg_lower for q in ["how are you", "how's it going", "hows it going", "how do you do"]):
-            reply_text = "I'm doing great, thanks for asking! 🎧 Just hanging out in the studio listening to some records. How's your day going?"
-        elif any(q in msg_lower for q in ["weather", "forecast", "rain", "sunny", "temperature"]):
-            reply_text = "I don't have live satellite radar in the studio booth, but it's always a comfortable 72° in here with good tunes playing! ☀️ How is the weather looking outside your window?"
+        # A. Live Weather & Forecast
+        if re.search(r'\b(weather|forecast|temperature|temp|rain|raining|snow|sunny|cold outside|hot outside)\b', msg_lower):
+            loc_match = re.search(r'\b(?:in|for|at|around)\s+([a-zA-Z\s,]+?)(?:\?|$|\.|\!|\,)', msg)
+            target_city = loc_match.group(1).strip() if loc_match else ""
+            if target_city:
+                try:
+                    from urllib.parse import quote_plus
+                    w_res = requests.get(f"https://wttr.in/{quote_plus(target_city)}?format=%l:+%C+%t+(feels+like+%f),+Humidity+%h,+Wind+%w", timeout=2.2)
+                    if w_res.ok and len(w_res.text.strip()) > 5:
+                        reply_text = f"🌤️ **Live Weather for {target_city.title()}**:\n{w_res.text.strip()}\n\nNeed any tunes to match the weather outside?"
+                except Exception:
+                    pass
+            if not reply_text:
+                reply_text = "I don't have satellite radar in the studio booth right now! ☀️ What city or town are you in? Tell me your city and I'll pull up the forecast for you."
+
+        # B. Common check-ins, capabilities, jokes, and trivia
+        elif any(q in msg_lower for q in ["who are you", "what can you do", "help", "how do you work", "what are your features"]):
+            reply_text = "I'm your **AI Personal Assistant & Music DJ** on MP3aud.io! 🎧 I can answer questions, chat with you about life and music, curate 6-track playlists for any mood, or extract 320kbps MP3s and ringtones.\n\nWhat's on your mind or what would you like to listen to?"
+        elif any(q in msg_lower for q in ["how are you", "how's it going", "hows it going", "how do you do", "what's up", "whats up"]):
+            reply_text = "I'm doing great, thanks for asking! 🎧 Just hanging out in the studio listening to some records. How is your day going so far?"
         elif any(q in msg_lower for q in ["joke", "funny", "laugh"]):
             reply_text = "😂 Why did the synthesizer break up with the acoustic guitar?\n\nBecause they just couldn't find the right *frequency*—and the guitar had way too many *strings* attached! 🎹🎸"
         elif any(q in msg_lower for q in ["fact", "trivia"]):
             reply_text = "🎲 **Music Fact:** Prince played **all 27 instruments** on his 1978 debut album *For You*—including synths, guitars, bass, drums, and every layer of vocal harmony! Did you know that?"
-        else:
-            reply_text = "I hear you! 😊 We can chat about whatever is on your mind, explore favorite artists, or whenever you want me to put together a playlist, just say the word."
+
+        # C. General Knowledge / Person / Topic lookup via Wikipedia Search API
+        if not reply_text:
+            cleaned_target = re.sub(r'^(who is|who are|tell me about|what is|what are|do you know|can you tell me about|explain|how does|why is|why are)\s+', '', msg_lower).strip(' ?.!')
+            if cleaned_target and len(cleaned_target.split()) <= 10:
+                try:
+                    from urllib.parse import quote_plus
+                    s_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={quote_plus(cleaned_target)}&utf8=&format=json"
+                    s_resp = requests.get(s_url, headers={"User-Agent": "MP3aud.ioAssistant/2.0"}, timeout=2.0)
+                    if s_resp.ok:
+                        s_data = s_resp.json()
+                        search_results = s_data.get("query", {}).get("search", [])
+                        if search_results:
+                            top_title = search_results[0].get("title")
+                            if top_title:
+                                sum_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(top_title)}"
+                                sum_resp = requests.get(sum_url, headers={"User-Agent": "MP3aud.ioAssistant/2.0"}, timeout=1.8)
+                                if sum_resp.ok:
+                                    sum_data = sum_resp.json()
+                                    extract = sum_data.get("extract")
+                                    if extract and len(extract) > 40:
+                                        reply_text = f"**{top_title}**\n\n{extract[:450]}...\n\nWant to chat more about this, or should I curate a 6-track mix to listen to while we talk?"
+                except Exception as e:
+                    logger.warning(f"Wikipedia search fallback error: {e}")
+
+        # D. Dynamic Conversational Response for open-ended chatting
+        if not reply_text:
+            if re.search(r'\b(tired|exhausted|long day|stress|anxious|overwhelmed|sleepy)\b', msg_lower):
+                reply_text = "Days like that can really take it out of you. 🌿 Are you finally able to kick back and unwind for the rest of the day, or still powering through it? I'm here if you want to chat or put on some relaxing sounds."
+            elif re.search(r'\b(happy|excited|hyped|great day|awesome|good day)\b', msg_lower):
+                reply_text = "That's awesome to hear! 🎉 Love the positive energy. What's been the best part of your day so far?"
+            elif re.search(r'\b(bored|nothing to do)\b', msg_lower):
+                reply_text = "Boredom is just an invitation for good music or a fun chat! 🎶 Tell me: what's your all-time favorite song or album, or do you want me to surprise you with a fresh playlist?"
+            elif re.search(r'\b(cooking|dinner|lunch|food|eating|recipe)\b', msg_lower):
+                reply_text = "Nice! Cooking with good music in the background is the best combination. 🍳 What are you making today?"
+            elif re.search(r'\b(workout|gym|running|cardio|lifting)\b', msg_lower):
+                reply_text = "Get after it! 💪 High-energy workouts are unbeatable. Do you have your workout playlist lined up, or want me to queue up some heavy beats?"
+            elif re.search(r'\b(work|working|study|studying|homework|reading)\b', msg_lower):
+                reply_text = "Lock in! 📚 Need a quiet headspace to focus, or do you like having chill instrumental background beats while you work?"
+            else:
+                reply_text = f"I hear you! 😊 What's on your mind right now? We can chat about whatever you'd like, explore your favorite artists, or whenever you want me to curate a mix, just say the word."
 
         return {
             "success": True,
