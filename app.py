@@ -314,6 +314,49 @@ Thread(target=initialize_database, daemon=True).start()
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
+def call_groq_direct(messages, api_key, model="llama-3.3-70b-versatile", timeout_sec=14.0, force_json=False):
+    """
+    Direct HTTPS caller for Groq Cloud API.
+    Bypasses httpx/openai SDK version conflicts completely using standard requests.
+    """
+    clean_key = (api_key or "").strip().strip("`'\"")
+    if not clean_key:
+        return None
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {clean_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
+    if force_json:
+        payload["response_format"] = {"type": "json_object"}
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+        if resp.ok:
+            data = resp.json()
+            choices = data.get("choices", [])
+            if choices and choices[0].get("message"):
+                return choices[0]["message"].get("content", "").strip()
+        else:
+            logger.warning(f"Groq direct call status {resp.status_code}: {resp.text}")
+            if model != "llama-3.1-8b-instant":
+                payload["model"] = "llama-3.1-8b-instant"
+                payload.pop("response_format", None)
+                resp2 = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+                if resp2.ok:
+                    data2 = resp2.json()
+                    choices2 = data2.get("choices", [])
+                    if choices2 and choices2[0].get("message"):
+                        return choices2[0]["message"].get("content", "").strip()
+    except Exception as e:
+        logger.warning(f"Groq direct call exception: {e}")
+    return None
+
 def get_ai_client_and_model(custom_key=None):
     """Dynamically resolves available AI provider (Groq, OpenAI, Gemini, or OpenRouter)."""
     # 0. User-provided key (passed via X-AI-Key header or request body)
@@ -575,11 +618,27 @@ def health_check():
 
 @app.route('/api/test_groq', methods=['GET', 'POST'])
 def test_groq():
-    groq_related_env = [k for k in os.environ.keys() if 'groq' in k.lower() or 'ai' in k.lower()]
-    custom_key = request.headers.get("X-AI-Key") or request.args.get("key")
-    client, model, supports_json = get_ai_client_and_model(custom_key)
-    if not client:
-        return jsonify({"success": False, "error": "No AI client available.", "found_env_keys": groq_related_env}), 200
+    custom_key = (request.headers.get("X-AI-Key") or request.args.get("key") or "").strip()
+    groq_key = custom_key if (custom_key and custom_key.startswith("gsk_")) else (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip().strip("`'\"")
+    if not groq_key:
+        return jsonify({
+            "success": False,
+            "error": "No Groq API key found in request or environment (GROQ_API_KEY/GROQ_KEY)."
+        }), 200
+    
+    reply = call_groq_direct([{"role": "user", "content": "Say 'Groq AI is online and ready!' in exactly 7 words."}], groq_key, timeout_sec=12.0)
+    if reply:
+        return jsonify({
+            "success": True,
+            "provider": "Groq Cloud (Direct HTTPS)",
+            "model": "llama-3.3-70b-versatile",
+            "reply": reply
+        }), 200
+    else:
+        return jsonify({
+            "success": False,
+            "error": "Groq direct HTTPS call failed. Check if API key is valid at console.groq.com."
+        }), 200
     try:
         completion = client.chat.completions.create(
             model=model,
@@ -2325,100 +2384,107 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         or (re.search(r'\b(mp3|m4r)\b', msg_lower) and not re.search(r'\b(how|what|why|is|are|can)\b', msg_lower))
     )
 
-    custom_key = request.headers.get("X-AI-Key") or request.headers.get("X-Groq-Key")
+        # 2. Resolve AI Engine (Groq Cloud via Direct HTTPS or OpenAI/Gemini/OpenRouter SDK)
+    custom_key = (request.headers.get("X-AI-Key") or request.headers.get("X-Groq-Key") or "").strip()
     if not custom_key and request.is_json:
-        custom_key = (request.json or {}).get("ai_key")
-    ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
-    if ai_client:
+        custom_key = ((request.json or {}).get("ai_key") or "").strip()
+
+    groq_key = custom_key if (custom_key and custom_key.startswith("gsk_")) else (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip().strip("`'\"")
+
+    current_tracks_context = ""
+    if active_tracks:
+        formatted_active = "; ".join(
+            f"#{i+1}: '{t.get('title')}' by {t.get('artist')} (Album: {t.get('album', 'Single')}, Year: {t.get('year', 'N/A')}, Duration: {t.get('duration', '3:30')})"
+            for i, t in enumerate(active_tracks[:6])
+        )
+        current_tracks_context = f"\nCurrently displayed playlist tracks in the chat: {formatted_active}\n"
+
+    sys_prompt = (
+        "You are MP3aud.io, an intelligent, empathetic, friendly AI personal assistant and DJ chatting with a user via text. "
+        "Answer the user's specific questions directly, accurately, and conversationally like a human friend texting in a chatâ€”never robotic, never dry. "
+        "If the user asks questions about science, daily life, how things work, advice, jokes, or conversation, answer thoroughly and warmly! "
+        "If the user asks music questions (artists, release years, albums, genres), provide rich insights. "
+        + current_tracks_context +
+        "Respond strictly in valid JSON with:\n"
+        "{\n"
+        '  "reply": "Direct, helpful, warm response to their specific question or message (1-3 sentences)",\n'
+        '  "follow_up_note": "Engaging natural follow-up question to keep the conversation going",\n'
+        '  "playlist_title": "Catchy title for the track or playlist (only if tracks requested)",\n'
+        '  "playlist_vibe": "Short vibe/genre subtitle (only if tracks requested)",\n'
+        '  "mode": "chat" | "playlist" | "single" | "ringtone",\n'
+        '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
+        "}\n"
+        "Rules:\n"
+        "- Do NOT provide a playlist or song tracks for normal conversation! If the user says hello, asks how you are, talks about their day, shares feelings, asks questions, or chats about life, set mode='chat' and tracks=[].\n"
+        "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, or play a playlist or mix of songs.\n"
+        "- If the user asks for a single song or ringtone, set mode='single' or 'ringtone' and return 1 track.\n"
+        "- Output ONLY valid JSON."
+    )
+    messages_payload = [{"role": "system", "content": sys_prompt}]
+    if history and isinstance(history, list):
+        for h in history[-6:]:
+            if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+                messages_payload.append({"role": h["role"], "content": str(h["content"])[:500]})
+    messages_payload.append({"role": "user", "content": msg})
+
+    raw_content = None
+    if groq_key:
+        raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.3-70b-versatile", timeout_sec=14.0, force_json=True)
+        if not raw_content:
+            raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.1-8b-instant", timeout_sec=10.0, force_json=False)
+
+    if not raw_content:
+        ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
+        if ai_client:
+            try:
+                req_kwargs = {
+                    "model": ai_model,
+                    "messages": messages_payload,
+                    "temperature": 0.7,
+                    "timeout": 14.0
+                }
+                if supports_json:
+                    req_kwargs["response_format"] = {"type": "json_object"}
+                completion = ai_client.chat.completions.create(**req_kwargs)
+                raw_content = completion.choices[0].message.content.strip()
+            except Exception as e:
+                logger.warning(f"OpenAI SDK fallback call: {e}")
+
+    if raw_content:
+        clean_str = raw_content.strip()
+        if clean_str.startswith("```"):
+            clean_str = re.sub(r"^```(?:json)?\s*", "", clean_str)
+            clean_str = re.sub(r"\s*```$", "", clean_str)
         try:
-            current_tracks_context = ""
-            if active_tracks:
-                formatted_active = "; ".join(
-                    f"#{i+1}: '{t.get('title')}' by {t.get('artist')} (Album: {t.get('album', 'Single')}, Year: {t.get('year', 'N/A')}, Duration: {t.get('duration', '3:30')})"
-                    for i, t in enumerate(active_tracks[:6])
-                )
-                current_tracks_context = f"\nCurrently displayed playlist tracks in the chat: {formatted_active}\n"
-
-            sys_prompt = (
-                "You are MP3aud.io, an intelligent, empathetic, friendly AI personal assistant and DJ chatting with a user via text. "
-                "Answer the user's specific questions directly, accurately, and conversationally like a human friend texting in a chat—never robotic, never dry. "
-                "If the user asks questions about science, daily life, how things work, advice, jokes, or conversation, answer thoroughly and warmly! "
-                "If the user asks music questions (artists, release years, albums, genres), provide rich insights. "
-                + current_tracks_context +
-                "Respond strictly in valid JSON with:\n"
-                "{\n"
-                '  "reply": "Direct, helpful, warm response to their specific question or message (1-3 sentences)",\n'
-                '  "follow_up_note": "Engaging natural follow-up question to keep the conversation going",\n'
-                '  "playlist_title": "Catchy title for the track or playlist (only if tracks requested)",\n'
-                '  "playlist_vibe": "Short vibe/genre subtitle (only if tracks requested)",\n'
-                '  "mode": "chat" | "playlist" | "single" | "ringtone",\n'
-                '  "tracks": [{"title": "Exact Song Title", "artist": "Exact Artist Name"}]\n'
-                "}\n"
-                "Rules:\n"
-                "- Do NOT provide a playlist or song tracks for normal conversation! If the user says hello, asks how you are, talks about their day, shares feelings, asks questions, or chats about life, set mode='chat' and tracks=[].\n"
-                "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, or play a playlist or mix of songs.\n"
-                "- If the user asks for a single song or ringtone, set mode='single' or 'ringtone' and return 1 track.\n"
-                "- Output ONLY valid JSON."
-            )
-            messages_payload = [{"role": "system", "content": sys_prompt}]
-            if history and isinstance(history, list):
-                for h in history[-6:]:
-                    if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
-                        messages_payload.append({"role": h["role"], "content": str(h["content"])[:500]})
-            messages_payload.append({"role": "user", "content": msg})
-
-            req_kwargs = {
-                "model": ai_model,
-                "messages": messages_payload,
-                "temperature": 0.7,
-                "timeout": 15.0
+            parsed = json.loads(clean_str)
+        except Exception:
+            parsed = {
+                "mode": "chat",
+                "reply": raw_content.strip(),
+                "tracks": []
             }
-            if supports_json:
-                req_kwargs["response_format"] = {"type": "json_object"}
 
-            try:
-                completion = ai_client.chat.completions.create(**req_kwargs)
-            except Exception as first_err:
-                logger.warning(f"AI primary attempt ({ai_model}) failed: {first_err}, retrying...")
-                req_kwargs.pop("response_format", None)
-                if "llama" in str(ai_model):
-                    req_kwargs["model"] = "llama-3.1-8b-instant"
-                completion = ai_client.chat.completions.create(**req_kwargs)
-
-            raw_content = completion.choices[0].message.content.strip()
-            if raw_content.startswith("```"):
-                raw_content = re.sub(r"^```(?:json)?\s*", "", raw_content)
-                raw_content = re.sub(r"\s*```$", "", raw_content)
-            try:
-                parsed = json.loads(raw_content)
-            except Exception:
-                parsed = {
-                    "mode": "chat",
-                    "reply": raw_content,
-                    "tracks": []
-                }
-
-            raw_tracks = parsed.get("tracks") or []
-            if parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track):
-                return {
-                    "success": True,
-                    "mode": "chat",
-                    "reply": parsed.get("reply") or "I'm right here with you! Tell me what's on your mind.",
-                    "follow_up_note": parsed.get("follow_up_note") or "",
-                    "tracks": []
-                }
-            if raw_tracks:
-                tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
-                enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=2.0)
-                return {
-                    "success": True,
-                    "reply": parsed.get("reply") or "Here are the tracks I hand-picked for you! Tap play to listen right in our chat or grab the MP3s below.",
-                    "follow_up_note": parsed.get("follow_up_note") or "How does this lineup feel? Tell me if you want it more upbeat or mellow!",
-                    "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
-                    "playlist_title": parsed.get("playlist_title") or "Curated Mix",
-                    "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection • 320kbps Ready",
-                    "tracks": enriched_tracks
-                }
+        raw_tracks = parsed.get("tracks") or []
+        if parsed.get("mode") == "chat" or (not wants_playlist and not wants_single_track):
+            return {
+                "success": True,
+                "mode": "chat",
+                "reply": parsed.get("reply") or "I'm right here with you! Tell me what's on your mind.",
+                "follow_up_note": parsed.get("follow_up_note") or "",
+                "tracks": []
+            }
+        if raw_tracks:
+            tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
+            enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=2.0)
+            return {
+                "success": True,
+                "reply": parsed.get("reply") or "Here are the tracks I hand-picked for you! Tap play to listen right in our chat or grab the MP3s below.",
+                "follow_up_note": parsed.get("follow_up_note") or "How does this lineup feel? Tell me if you want it more upbeat or mellow!",
+                "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
+                "playlist_title": parsed.get("playlist_title") or "Curated Mix",
+                "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection â€¢ 320kbps Ready",
+                "tracks": enriched_tracks
+            }
         except Exception as ai_err:
             logger.warning(f"AI music curation fallback: {ai_err}")
 
