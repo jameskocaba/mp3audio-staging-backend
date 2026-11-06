@@ -114,6 +114,9 @@ def not_found_error(error):
 @app.errorhandler(Exception)
 def handle_exception(e):
     import traceback
+    import werkzeug.exceptions
+    if isinstance(e, werkzeug.exceptions.HTTPException):
+        return jsonify({'error': e.name, 'message': e.description}), e.code
     return jsonify({
         'error': 'Internal Server Error',
         'message': str(e),
@@ -326,7 +329,7 @@ def get_ai_client_and_model(custom_key=None):
             return OpenAI(api_key=k), "gpt-4o-mini", True
 
     # 1. Groq Cloud (Free, ultra-fast 300ms inference, Llama 3.3 70B)
-    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    groq_key = (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip()
     if groq_key:
         try:
             return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key), "llama-3.3-70b-versatile", True
@@ -563,8 +566,11 @@ def refund_unused_credits(user_id, payment_method, unused_credits, session_id=No
         logger.error(f"Failed to refund credits: {e}")
 
 @app.route('/health', methods=['GET'])
+@app.route('/health_check', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy"}), 200
+    has_groq = bool((os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip())
+    has_openai = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    return jsonify({"status": "healthy", "has_groq": has_groq, "has_openai": has_openai}), 200
 
 @app.route('/auth/login', methods=['POST'])
 def send_magic_link():
@@ -2337,7 +2343,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 "model": ai_model,
                 "messages": messages_payload,
                 "temperature": 0.7,
-                "timeout": 7.0
+                "timeout": 15.0
             }
             if supports_json:
                 req_kwargs["response_format"] = {"type": "json_object"}
