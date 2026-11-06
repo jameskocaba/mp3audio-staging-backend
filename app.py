@@ -626,38 +626,32 @@ def test_groq():
             "error": "No Groq API key found in request or environment (GROQ_API_KEY/GROQ_KEY)."
         }), 200
     
-    reply = call_groq_direct([{"role": "user", "content": "Say 'Groq AI is online and ready!' in exactly 7 words."}], groq_key, timeout_sec=12.0)
-    if reply:
-        return jsonify({
-            "success": True,
-            "provider": "Groq Cloud (Direct HTTPS)",
-            "model": "llama-3.3-70b-versatile",
-            "reply": reply
-        }), 200
-    else:
-        return jsonify({
-            "success": False,
-            "error": "Groq direct HTTPS call failed. Check if API key is valid at console.groq.com."
-        }), 200
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": "Say hello in 5 words."}],
+        "max_tokens": 50
+    }
     try:
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "Say hello in 5 words."}],
-            max_tokens=30,
-            timeout=12.0
-        )
+        resp = requests.post(url, headers=headers, json=payload, timeout=10.0)
+        resp_data = resp.json() if "application/json" in resp.headers.get("Content-Type", "") else resp.text
         return jsonify({
-            "success": True,
-            "model": model,
-            "reply": completion.choices[0].message.content
+            "success": resp.ok,
+            "status_code": resp.status_code,
+            "groq_response": resp_data,
+            "key_preview": f"{groq_key[:7]}...{groq_key[-4:]}" if len(groq_key) > 11 else "len=" + str(len(groq_key))
         }), 200
     except Exception as e:
         return jsonify({
             "success": False,
-            "model": model,
-            "error_type": type(e).__name__,
-            "error_msg": str(e)
+            "error": str(e),
+            "key_preview": f"{groq_key[:7]}...{groq_key[-4:]}" if len(groq_key) > 11 else "len=" + str(len(groq_key))
         }), 200
+
 
 @app.route('/auth/login', methods=['POST'])
 def send_magic_link():
