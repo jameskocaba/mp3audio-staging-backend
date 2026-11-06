@@ -314,7 +314,7 @@ Thread(target=initialize_database, daemon=True).start()
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def call_groq_direct(messages, api_key, model="llama-3.3-70b-versatile", timeout_sec=14.0, force_json=False):
+def call_groq_direct(messages, api_key, model="llama-3.1-8b-instant", timeout_sec=8.0, force_json=False):
     """
     Direct HTTPS caller for Groq Cloud API.
     Bypasses httpx/openai SDK version conflicts completely using standard requests.
@@ -327,34 +327,33 @@ def call_groq_direct(messages, api_key, model="llama-3.3-70b-versatile", timeout
         "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024
-    }
-    if force_json:
-        payload["response_format"] = {"type": "json_object"}
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
-        if resp.ok:
-            data = resp.json()
-            choices = data.get("choices", [])
-            if choices and choices[0].get("message"):
-                return choices[0]["message"].get("content", "").strip()
-        else:
-            logger.warning(f"Groq direct call status {resp.status_code}: {resp.text}")
-            if model != "llama-3.1-8b-instant":
-                payload["model"] = "llama-3.1-8b-instant"
-                payload.pop("response_format", None)
-                resp2 = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
-                if resp2.ok:
-                    data2 = resp2.json()
-                    choices2 = data2.get("choices", [])
-                    if choices2 and choices2[0].get("message"):
-                        return choices2[0]["message"].get("content", "").strip()
-    except Exception as e:
-        logger.warning(f"Groq direct call exception: {e}")
+    
+    candidate_models = [model] if model else []
+    candidate_models += ["llama-3.1-8b-instant", "llama3-8b-8192", "mixtral-8x7b-32768"]
+    seen = set()
+    models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
+
+    for candidate in models_to_try:
+        payload = {
+            "model": candidate,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
+        if force_json:
+            payload["response_format"] = {"type": "json_object"}
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+            if resp.ok:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices and choices[0].get("message"):
+                    return choices[0]["message"].get("content", "").strip()
+            else:
+                logger.warning(f"Groq direct call with {candidate} returned status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Groq direct call exception with {candidate}: {e}")
+
     return None
 
 def get_ai_client_and_model(custom_key=None):
@@ -626,13 +625,36 @@ def test_groq():
             "error": "No Groq API key found in request or environment (GROQ_API_KEY/GROQ_KEY)."
         }), 200
     
-    url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {groq_key}",
         "Content-Type": "application/json"
     }
+    # 1. Fetch available models on this Groq account
+    try:
+        models_resp = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=5.0)
+        available_models = [m["id"] for m in models_resp.json().get("data", [])] if models_resp.ok else []
+    except Exception:
+        available_models = []
+
+    # 2. Pick the best working chat model
+    candidate_models = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-70b-versatile",
+        "llama3-70b-8192",
+        "llama-3.1-8b-instant",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
+    model_to_use = "llama-3.1-8b-instant"
+    for m in candidate_models:
+        if m in available_models:
+            model_to_use = m
+            break
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": model_to_use,
         "messages": [{"role": "user", "content": "Say hello in 5 words."}],
         "max_tokens": 50
     }
@@ -641,6 +663,8 @@ def test_groq():
         resp_data = resp.json() if "application/json" in resp.headers.get("Content-Type", "") else resp.text
         return jsonify({
             "success": resp.ok,
+            "tested_model": model_to_use,
+            "available_models": available_models[:15],
             "status_code": resp.status_code,
             "groq_response": resp_data,
             "key_preview": f"{groq_key[:7]}...{groq_key[-4:]}" if len(groq_key) > 11 else "len=" + str(len(groq_key))
@@ -649,7 +673,7 @@ def test_groq():
         return jsonify({
             "success": False,
             "error": str(e),
-            "key_preview": f"{groq_key[:7]}...{groq_key[-4:]}" if len(groq_key) > 11 else "len=" + str(len(groq_key))
+            "available_models": available_models[:15]
         }), 200
 
 
@@ -2423,9 +2447,9 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     raw_content = None
     if groq_key:
-        raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.3-70b-versatile", timeout_sec=14.0, force_json=True)
+        raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.1-8b-instant", timeout_sec=8.0, force_json=True)
         if not raw_content:
-            raw_content = call_groq_direct(messages_payload, groq_key, model="llama-3.1-8b-instant", timeout_sec=10.0, force_json=False)
+            raw_content = call_groq_direct(messages_payload, groq_key, model="llama3-8b-8192", timeout_sec=6.0, force_json=True)
 
     if not raw_content:
         ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
