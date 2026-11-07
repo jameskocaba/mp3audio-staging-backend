@@ -2179,6 +2179,29 @@ def format_duration_ms(ms):
     sec = max(1, int(ms // 1000))
     return f"{sec // 60}:{sec % 60:02d}", sec
 
+def make_streaming_links_for_query(title_or_query, artist=""):
+    """Constructs universal direct-search deep-links for Apple Music, Spotify, and YouTube Music."""
+    term = f"{artist} {title_or_query}".strip(" -") if artist else str(title_or_query).strip()
+    enc = urllib.parse.quote(term)
+    return {
+        "apple_music": f"https://music.apple.com/search?term={enc}",
+        "spotify": f"https://open.spotify.com/search/{enc}",
+        "youtube_music": f"https://music.youtube.com/search?q={enc}",
+        "web_player": f"{FRONTEND_URL.rstrip('/')}/?q={enc}"
+    }
+
+def attach_streaming_links_to_track(t):
+    """Ensures a track dictionary always contains ready-to-click streaming URLs."""
+    if not isinstance(t, dict):
+        return t
+    title = t.get("title", "")
+    artist = t.get("artist", "")
+    st = make_streaming_links_for_query(title, artist)
+    t["apple_music_url"] = t.get("apple_music_url") or st["apple_music"]
+    t["spotify_url"] = t.get("spotify_url") or st["spotify"]
+    t["youtube_music_url"] = t.get("youtube_music_url") or st["youtube_music"]
+    return t
+
 def format_itunes_item(item, index=1):
     title = item.get("trackName") or "Unknown Track"
     artist = item.get("artistName") or "Unknown Artist"
@@ -2192,6 +2215,11 @@ def format_itunes_item(item, index=1):
         if ym:
             year = ym.group(1)
     dur_str, dur_sec = format_duration_ms(item.get("trackTimeMillis"))
+    search_term = f"{artist} {title}".strip()
+    enc_term = urllib.parse.quote(search_term)
+    apple_link = item.get("trackViewUrl") or f"https://music.apple.com/search?term={enc_term}"
+    spotify_link = f"https://open.spotify.com/search/{enc_term}"
+    ytmusic_link = f"https://music.youtube.com/search?q={enc_term}"
     return {
         "index": index,
         "title": title,
@@ -2203,7 +2231,10 @@ def format_itunes_item(item, index=1):
         "duration_sec": dur_sec,
         "artwork_url": artwork,
         "preview_url": preview_url,
-        "search_query": f"ytsearch1:{artist} - {title} official audio"
+        "search_query": f"ytsearch1:{artist} - {title} official audio",
+        "apple_music_url": apple_link,
+        "spotify_url": spotify_link,
+        "youtube_music_url": ytmusic_link
     }
 
 _ITUNES_TRACK_CACHE = {}
@@ -2230,6 +2261,7 @@ def search_deezer_fallback(query, limit=6):
                 dur_sec = item.get("duration") or 204
                 m, s = divmod(dur_sec, 60)
                 dur_str = f"{m}:{s:02d}"
+                st_links = make_streaming_links_for_query(t_title, t_artist)
                 tracks.append({
                     "index": idx + 1,
                     "title": t_title,
@@ -2241,7 +2273,10 @@ def search_deezer_fallback(query, limit=6):
                     "duration_sec": dur_sec,
                     "artwork_url": t_art or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
                     "preview_url": t_prev,
-                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip()
+                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip(),
+                    "apple_music_url": st_links["apple_music"],
+                    "spotify_url": st_links["spotify"],
+                    "youtube_music_url": st_links["youtube_music"]
                 })
             return tracks
     except Exception as e:
@@ -2255,6 +2290,7 @@ def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
     if cache_key in _ITUNES_TRACK_CACHE:
         cached = dict(_ITUNES_TRACK_CACHE[cache_key])
         cached["index"] = index
+        attach_streaming_links_to_track(cached)
         if not cached.get("preview_url"):
             dz = search_deezer_fallback(query, limit=1)
             if dz and dz[0].get("preview_url"):
@@ -2288,9 +2324,11 @@ def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
     if dz_items:
         dz_track = dz_items[0]
         dz_track["index"] = index
+        attach_streaming_links_to_track(dz_track)
         _ITUNES_TRACK_CACHE[cache_key] = dict(dz_track)
         return dz_track
 
+    st = make_streaming_links_for_query(title or f"Track {index}", artist or "Featured Artist")
     return {
         "index": index,
         "title": title or f"Track {index}",
@@ -2302,7 +2340,10 @@ def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
         "duration_sec": 204,
         "artwork_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
         "preview_url": "",
-        "search_query": f"ytsearch1:{artist} - {title} official audio".strip()
+        "search_query": f"ytsearch1:{artist} - {title} official audio".strip(),
+        "apple_music_url": st["apple_music"],
+        "spotify_url": st["spotify"],
+        "youtube_music_url": st["youtube_music"]
     }
 
 def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
@@ -2319,8 +2360,10 @@ def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
             if cache_key in _ITUNES_TRACK_CACHE:
                 cached = dict(_ITUNES_TRACK_CACHE[cache_key])
                 cached["index"] = idx + 1
+                attach_streaming_links_to_track(cached)
                 enriched.append(cached)
             else:
+                st = make_streaming_links_for_query(t_title or f"Track {idx + 1}", t_artist or "Featured Artist")
                 enriched.append({
                     "index": idx + 1,
                     "title": t_title or f"Track {idx + 1}",
@@ -2332,7 +2375,10 @@ def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
                     "duration_sec": 210,
                     "artwork_url": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
                     "preview_url": "",
-                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip()
+                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip(),
+                    "apple_music_url": st["apple_music"],
+                    "spotify_url": st["spotify"],
+                    "youtube_music_url": st["youtube_music"]
                 })
     return enriched
 
@@ -2430,13 +2476,16 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             f"Tap play below to preview, or hit **Download MP3** {'/ **Download Playlist (.ZIP)** ' if len(tracks) > 1 else ''}"
             f"for full 320kbps audio with HD cover art."
         )
+        for t in tracks:
+            attach_streaming_links_to_track(t)
         return {
             "success": True,
             "reply": reply,
             "mode": mode,
             "playlist_title": playlist_title,
             "playlist_vibe": "Direct Link Extraction • High-Resolution ID3 Tagged",
-            "tracks": tracks
+            "tracks": tracks,
+            "streaming_links": make_streaming_links_for_query(playlist_title)
         }
 
 
@@ -2736,13 +2785,16 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         _VIBE_ROTATION_IDX[0] += 1
         _, (p_title, p_vibe, seed_list) = vibe_items[chosen_idx]
         enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+        for t in enriched_tracks:
+            attach_streaming_links_to_track(t)
         return {
             "success": True,
             "reply": f"Here is a fresh **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
             "mode": "playlist",
             "playlist_title": p_title,
             "playlist_vibe": p_vibe,
-            "tracks": enriched_tracks
+            "tracks": enriched_tracks,
+            "streaming_links": make_streaming_links_for_query(p_title)
         }
 
     if not cleaned_query:
@@ -2753,6 +2805,9 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     if not tracks:
         tracks = [enrich_single_track(cleaned_query, "", index=1)]
+
+    for t in tracks:
+        attach_streaming_links_to_track(t)
 
     if len(tracks) == 1 or is_ringtone_req:
         t = tracks[0]
@@ -2767,7 +2822,8 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             "mode": mode,
             "playlist_title": f"{t['title']} — {t['artist']}",
             "playlist_vibe": f"{t.get('album', 'Single')} ({t.get('year') or 'HD Audio'})",
-            "tracks": [t]
+            "tracks": [t],
+            "streaming_links": make_streaming_links_for_query(f"{t['title']} {t['artist']}")
         }
 
     p_title = f"{cleaned_query.title()} — Curated Mix"
@@ -2777,7 +2833,8 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         "mode": "playlist",
         "playlist_title": p_title,
         "playlist_vibe": f"Curated for \"{cleaned_query}\" • 320kbps & ID3 Tagged",
-        "tracks": tracks
+        "tracks": tracks,
+        "streaming_links": make_streaming_links_for_query(p_title)
     }
 
 
@@ -2964,7 +3021,8 @@ _RUNTIME_BOT_CONFIG = {
     "telegram_bot_token": os.environ.get('TELEGRAM_BOT_TOKEN', '').strip(),
     "telegram_bot_username": os.environ.get('TELEGRAM_BOT_USERNAME', '').lstrip('@'),
     "telegram_phone": os.environ.get('TELEGRAM_PHONE_NUMBER', '').strip(),
-    "whatsapp_number": os.environ.get('WHATSAPP_NUMBER', '').strip()
+    "whatsapp_number": os.environ.get('WHATSAPP_NUMBER', '').strip(),
+    "twilio_phone": (os.environ.get('TWILIO_PHONE_NUMBER') or os.environ.get('SMS_PHONE_NUMBER') or '').strip()
 }
 
 def auto_register_telegram_webhook():
@@ -3036,9 +3094,19 @@ def get_bot_info():
         "https://wa.me/?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist"
     )
 
+    twilio_phone = (_RUNTIME_BOT_CONFIG.get("twilio_phone") or os.environ.get('TWILIO_PHONE_NUMBER') or os.environ.get('SMS_PHONE_NUMBER') or tg_phone or '').strip()
+    sms_display = twilio_phone or "+1 (800) MP3-AUD"
+    sms_clean = re.sub(r'[^\d+]', '', sms_display)
+    if sms_clean and not sms_clean.startswith('+'):
+        sms_clean = '+' + sms_clean
+    sms_starter_prompt = "Send me a chill late-night synthwave playlist"
+    sms_deep_url = f"sms:{sms_clean}?&body={urllib.parse.quote(sms_starter_prompt)}" if sms_clean else f"sms:?&body={urllib.parse.quote(sms_starter_prompt)}"
+
     base_api = PUBLIC_URL.rstrip('/')
     tg_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(tg_deep_url)}"
     wa_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(wa_deep_url)}"
+    sms_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(sms_deep_url)}"
+    sms_configured = bool(twilio_phone or os.environ.get('TWILIO_PHONE_NUMBER'))
 
     return jsonify({
         "telegram_bot_username": tg_handle_label,
@@ -3051,9 +3119,36 @@ def get_bot_info():
         "whatsapp_url": wa_deep_url,
         "whatsapp_qr_url": wa_qr_url,
         "whatsapp_configured": True,
+        "sms_phone": sms_display,
+        "sms_url": sms_deep_url,
+        "sms_qr_url": sms_qr_url,
+        "sms_configured": sms_configured,
+        "streaming_supported": ["apple_music", "spotify", "youtube_music"],
         "webhook_telegram": f"{base_api}/webhook/telegram",
         "webhook_whatsapp": f"{base_api}/webhook/whatsapp",
         "webhook_sms": f"{base_api}/webhook/sms"
+    }), 200
+
+
+@app.route('/api/bot/setup-sms', methods=['POST'])
+def setup_sms_webhook():
+    """Binds a Twilio/SMS phone number for iMessage and SMS text chat."""
+    data = request.json or {}
+    phone = (data.get('phone_number') or data.get('twilio_phone') or data.get('sms_phone') or '').strip()
+    if not phone:
+        return jsonify({"error": "Please provide a valid Twilio / SMS phone number."}), 400
+    _RUNTIME_BOT_CONFIG["twilio_phone"] = phone
+    clean_p = re.sub(r'[^\d+]', '', phone)
+    if clean_p and not clean_p.startswith('+'):
+        clean_p = '+' + clean_p
+    sms_deep_url = f"sms:{clean_p}?&body={urllib.parse.quote('Send me a chill late-night synthwave playlist')}"
+    sms_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(sms_deep_url)}"
+    return jsonify({
+        "ok": True,
+        "sms_phone": phone,
+        "sms_url": sms_deep_url,
+        "sms_qr_url": sms_qr_url,
+        "sms_configured": True
     }), 200
 
 
@@ -3307,7 +3402,18 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         if web_chat_url.startswith("https://"):
             listen_btn = {"text": "▶️ Listen in Telegram Mini-App", "web_app": {"url": web_chat_url}}
 
+        query_term = playlist_title if playlist_title != "MP3aud.io Mix" else text_msg
+        enc_query = urllib.parse.quote(query_term)
+        am_url = f"https://music.apple.com/search?term={enc_query}"
+        sp_url = f"https://open.spotify.com/search/{enc_query}"
+        yt_url = f"https://music.youtube.com/search?q={enc_query}"
+
         inline_kb = [
+            [
+                {"text": "🍎 Apple Music", "url": am_url},
+                {"text": "🟢 Spotify", "url": sp_url},
+                {"text": "🔴 YouTube Music", "url": yt_url}
+            ],
             [
                 {"text": "🔄 Next Playlist", "callback_data": "curate:send me a new playlist"},
                 {"text": "⬇️ Download MP3" if len(tracks) == 1 else "📦 Download ZIP (320kbps)", "url": single_mp3_url if len(tracks) == 1 else zip_download_url}
@@ -3415,8 +3521,19 @@ def whatsapp_webhook():
     # Check if this is a Twilio WhatsApp/SMS form webhook
     if request.form and ('Body' in request.form or 'From' in request.form):
         incoming_msg = request.form.get('Body', '').strip()
+        from_number = request.form.get('From', '').strip()
         if not incoming_msg:
             incoming_msg = "chill playlist"
+
+        lower_in = incoming_msg.lower()
+        if lower_in in ('help', 'start', 'hi', 'hello', 'hey', 'menu'):
+            welcome_body = (
+                "🎧 Welcome to MP3aud.io AI Music!\n\n"
+                "Text any song, artist, or vibe (e.g. 'chill synthwave playlist' or 'workout hype') to instantly receive curated tracks with 1-tap links to Apple Music, Spotify, YouTube Music, and 320kbps MP3s!\n\n"
+                "Try replying: 'synthwave mix'"
+            )
+            twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>{welcome_body}</Body></Message></Response>'
+            return app.response_class(twiml, mimetype='text/xml'), 200
 
         curated = curate_music_response(incoming_msg)
         tracks = curated.get("tracks", [])
@@ -3445,18 +3562,29 @@ def whatsapp_webhook():
 
         dl_link = f"{PUBLIC_URL.rstrip('/')}/download_mp3/{session_id}" if len(tracks) == 1 else f"{PUBLIC_URL.rstrip('/')}/download/{session_id}/playlist_backup.zip"
         web_link = f"{FRONTEND_URL.rstrip('/')}/?q={urllib.parse.quote(incoming_msg)}"
+        
+        query_term = playlist_title if playlist_title != "MP3aud.io Mix" else incoming_msg
+        enc_query = urllib.parse.quote(query_term)
+        am_link = f"https://music.apple.com/search?term={enc_query}"
+        sp_link = f"https://open.spotify.com/search/{enc_query}"
+        yt_link = f"https://music.youtube.com/search?q={enc_query}"
+
         track_lines = "\n".join([f"{t['index']}. {t['title']} - {t['artist']}" for t in tracks[:5]])
         body_text = (
             f"🎧 {playlist_title}\n\n"
             f"{track_lines}\n\n"
-            f"▶️ Play & Chat: {web_link}\n"
-            f"⬇️ Download MP3/ZIP: {dl_link}"
+            f"🎵 Open in Apps:\n"
+            f"🍎 Apple Music: {am_link}\n"
+            f"🟢 Spotify: {sp_link}\n"
+            f"🔴 YouTube Music: {yt_link}\n\n"
+            f"▶️ Web Player & 320k MP3s:\n{web_link}\n\n"
+            f"⬇️ 1-Click Download: {dl_link}"
         )
         media_tag = ""
-        if tracks and tracks[0].get("preview_url"):
-            media_tag = f"<Media>{tracks[0]['preview_url']}</Media>"
-        elif tracks and tracks[0].get("artwork_url"):
+        if tracks and tracks[0].get("artwork_url"):
             media_tag = f"<Media>{tracks[0]['artwork_url']}</Media>"
+        elif tracks and tracks[0].get("preview_url"):
+            media_tag = f"<Media>{tracks[0]['preview_url']}</Media>"
 
         twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>{body_text}</Body>{media_tag}</Message></Response>'
         return app.response_class(twiml, mimetype='text/xml'), 200
