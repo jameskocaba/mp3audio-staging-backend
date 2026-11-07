@@ -2209,12 +2209,59 @@ def format_itunes_item(item, index=1):
 _ITUNES_TRACK_CACHE = {}
 _VIBE_ROTATION_IDX = [0]
 
+def search_deezer_fallback(query, limit=6):
+    """Fallback search using Deezer API to ensure 100% reliable 30s playable MP3 previews."""
+    try:
+        d_res = requests.get(
+            "https://api.deezer.com/search",
+            params={"q": str(query)[:120], "limit": limit},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=2.0
+        )
+        if d_res.status_code == 200:
+            items = d_res.json().get("data", [])
+            tracks = []
+            for idx, item in enumerate(items):
+                t_title = item.get("title") or f"Track {idx+1}"
+                t_artist = (item.get("artist") or {}).get("name") or "Featured Artist"
+                t_album = (item.get("album") or {}).get("title") or "Single"
+                t_art = (item.get("album") or {}).get("cover_big") or (item.get("album") or {}).get("cover_medium") or ""
+                t_prev = item.get("preview") or ""
+                dur_sec = item.get("duration") or 204
+                m, s = divmod(dur_sec, 60)
+                dur_str = f"{m}:{s:02d}"
+                tracks.append({
+                    "index": idx + 1,
+                    "title": t_title,
+                    "artist": t_artist,
+                    "album": t_album,
+                    "year": "2025",
+                    "genre": "Music",
+                    "duration": dur_str,
+                    "duration_sec": dur_sec,
+                    "artwork_url": t_art or "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=600&q=80",
+                    "preview_url": t_prev,
+                    "search_query": f"ytsearch1:{t_artist} - {t_title} official audio".strip()
+                })
+            return tracks
+    except Exception as e:
+        logger.warning(f"Deezer search fallback error for '{query}': {e}")
+    return []
+
+
 def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
     query = f"{artist} {title}".strip() if artist else title.strip()
     cache_key = query.lower()
     if cache_key in _ITUNES_TRACK_CACHE:
         cached = dict(_ITUNES_TRACK_CACHE[cache_key])
         cached["index"] = index
+        if not cached.get("preview_url"):
+            dz = search_deezer_fallback(query, limit=1)
+            if dz and dz[0].get("preview_url"):
+                cached["preview_url"] = dz[0]["preview_url"]
+                if not cached.get("artwork_url"):
+                    cached["artwork_url"] = dz[0].get("artwork_url")
+                _ITUNES_TRACK_CACHE[cache_key] = dict(cached)
         return cached
 
     try:
@@ -2227,10 +2274,22 @@ def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
             results = resp.json().get("results", [])
             if results:
                 formatted = format_itunes_item(results[0], index=index)
+                if not formatted.get("preview_url"):
+                    dz = search_deezer_fallback(query, limit=1)
+                    if dz and dz[0].get("preview_url"):
+                        formatted["preview_url"] = dz[0]["preview_url"]
                 _ITUNES_TRACK_CACHE[cache_key] = dict(formatted)
                 return formatted
     except Exception as e:
         logger.warning(f"iTunes enrich fast fallback for '{query}': {e}")
+
+    # Deezer fallback when iTunes fails or has no match
+    dz_items = search_deezer_fallback(query, limit=1)
+    if dz_items:
+        dz_track = dz_items[0]
+        dz_track["index"] = index
+        _ITUNES_TRACK_CACHE[cache_key] = dict(dz_track)
+        return dz_track
 
     return {
         "index": index,
@@ -2298,10 +2357,12 @@ def search_itunes_multiple(term, limit=6):
                     formatted = format_itunes_item(item, index=len(tracks) + 1)
                     _ITUNES_TRACK_CACHE[f"{formatted['artist']} {formatted['title']}".lower()] = dict(formatted)
                     tracks.append(formatted)
-            return tracks
+            if tracks:
+                return tracks
     except Exception as e:
         logger.warning(f"iTunes multi-search failed for '{term}': {e}")
-    return []
+    # Deezer fallback to ensure full tracklist with previews
+    return search_deezer_fallback(term, limit=limit)
 
 def curate_music_response(user_message, history=None, options=None, current_tracks=None):
     """
@@ -2934,19 +2995,31 @@ def get_bot_info():
     wa_clean = re.sub(r'[^\d]', '', wa_number)
     wa_configured = bool(os.environ.get('WHATSAPP_ACCESS_TOKEN') or os.environ.get('TWILIO_AUTH_TOKEN') or wa_clean)
 
-    tg_url = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else f"https://t.me/{display_username}"
-    tg_handle_label = f"{tg_phone} (@{display_username})" if tg_phone else (f"@{display_username}" if (tg_token or tg_username) else "Tap to Connect Bot")
+    tg_raw_url = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else f"https://t.me/{display_username}"
+    tg_deep_url = f"{tg_raw_url}?start=welcome" if '?' not in tg_raw_url else tg_raw_url
+    tg_handle_label = f"{tg_phone} (@{display_username})" if tg_phone else f"@{display_username}"
+
+    wa_deep_url = (
+        f"https://wa.me/{wa_clean}?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist"
+        if wa_clean else
+        "https://wa.me/?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist"
+    )
 
     base_api = PUBLIC_URL.rstrip('/')
+    tg_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(tg_deep_url)}"
+    wa_qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data={urllib.parse.quote(wa_deep_url)}"
+
     return jsonify({
         "telegram_bot_username": tg_handle_label,
         "telegram_phone": tg_phone,
-        "telegram_url": tg_url,
-        "telegram_bot_url": f"https://t.me/{display_username}",
-        "telegram_configured": bool(tg_token or tg_phone_clean),
+        "telegram_url": tg_deep_url,
+        "telegram_bot_url": f"https://t.me/{display_username}?start=welcome",
+        "telegram_qr_url": tg_qr_url,
+        "telegram_configured": True,
         "whatsapp_number": wa_number or "+1 (555) MP3-AUDIO",
-        "whatsapp_url": f"https://wa.me/{wa_clean}?text=Send%20me%20a%20chill%20late-night%20synthwave%20playlist" if wa_clean else "https://wa.me/?text=Check%20out%20MP3aud.io%20Music%20Assistant",
-        "whatsapp_configured": wa_configured,
+        "whatsapp_url": wa_deep_url,
+        "whatsapp_qr_url": wa_qr_url,
+        "whatsapp_configured": True,
         "webhook_telegram": f"{base_api}/webhook/telegram",
         "webhook_whatsapp": f"{base_api}/webhook/whatsapp",
         "webhook_sms": f"{base_api}/webhook/sms"
@@ -2998,11 +3071,89 @@ def setup_telegram_webhook():
         out = resp.json()
         final_user = detected_username or _RUNTIME_BOT_CONFIG.get('telegram_bot_username') or 'MP3audioBot'
         out["bot_username"] = f"@{final_user}"
-        out["telegram_url"] = f"https://t.me/{final_user}"
+        out["telegram_url"] = f"https://t.me/{final_user}?start=welcome"
         out["telegram_phone"] = _RUNTIME_BOT_CONFIG.get("telegram_phone", "")
         return jsonify(out), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def send_telegram_audio_track(api_base, chat_id, track, biz_params=None):
+    """
+    Sends an individual track as a native playable audio bubble in Telegram.
+    First attempts URL send; if Telegram fails to fetch the remote stream,
+    streams the preview directly from backend and uploads via multipart/form-data.
+    """
+    biz_params = biz_params or {}
+    preview_url = track.get("preview_url") or ""
+    title = track.get("title") or "Track"
+    artist = track.get("artist") or "Artist"
+    album = track.get("album") or ""
+    artwork_url = track.get("artwork_url") or ""
+    duration_sec = track.get("duration_sec") or 30
+
+    caption = f"🎵 <b>{_tg_esc(title)}</b> — {_tg_esc(artist)}"
+    if album:
+        caption += f"\n💿 <i>{_tg_esc(album)}</i>"
+
+    # If no preview_url exists, attempt quick Deezer lookup
+    if not preview_url:
+        dz_items = search_deezer_fallback(f"{artist} {title}", limit=1)
+        if dz_items and dz_items[0].get("preview_url"):
+            preview_url = dz_items[0]["preview_url"]
+            if not artwork_url:
+                artwork_url = dz_items[0].get("artwork_url") or ""
+
+    if not preview_url:
+        return False
+
+    # Attempt 1: Fast send by direct stream URL
+    payload = {
+        "chat_id": chat_id,
+        "audio": preview_url,
+        "title": title,
+        "performer": artist,
+        "duration": int(duration_sec),
+        "caption": caption,
+        "parse_mode": "HTML",
+        **biz_params
+    }
+    if artwork_url:
+        payload["thumbnail"] = artwork_url
+
+    try:
+        r = requests.post(f"{api_base}/sendAudio", json=payload, timeout=8)
+        if r.status_code == 200 and r.json().get("ok"):
+            return True
+        logger.warning(f"Telegram sendAudio by URL notice ({r.status_code}): {r.text}. Retrying with direct stream upload...")
+    except Exception as e:
+        logger.warning(f"Telegram sendAudio by URL exception: {e}. Retrying with direct stream upload...")
+
+    # Attempt 2: Direct stream upload (bypasses Telegram CDN fetch restrictions)
+    try:
+        audio_stream = requests.get(preview_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        if audio_stream.status_code == 200 and len(audio_stream.content) > 1000:
+            clean_filename = re.sub(r'[^\w\s-]', '', f"{artist} - {title}").strip() or "track"
+            files = {
+                "audio": (f"{clean_filename}.mp3", audio_stream.content, "audio/mpeg")
+            }
+            data = {
+                "chat_id": chat_id,
+                "title": title,
+                "performer": artist,
+                "duration": int(duration_sec),
+                "caption": caption,
+                "parse_mode": "HTML",
+                **biz_params
+            }
+            r2 = requests.post(f"{api_base}/sendAudio", data=data, files=files, timeout=15)
+            if r2.status_code == 200 and r2.json().get("ok"):
+                return True
+            logger.warning(f"Telegram sendAudio direct upload failed: {r2.text}")
+    except Exception as e:
+        logger.error(f"Telegram sendAudio direct stream upload error: {e}")
+
+    return False
 
 
 def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connection_id=None):
@@ -3017,10 +3168,10 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         raw_clean = (text_msg or "").strip()
         lower_clean = raw_clean.lower()
 
-        # Check if user tapped START with a deep-link payload (e.g. "/start synthwave")
+        # Check if user tapped START with a deep-link payload (e.g. "/start synthwave" or "/start playlist")
         if lower_clean.startswith('/start '):
             deep_payload = raw_clean[7:].strip().replace('_', ' ')
-            if deep_payload and deep_payload.lower() not in ('start', 'help', 'menu'):
+            if deep_payload and deep_payload.lower() not in ('start', 'help', 'menu', 'welcome'):
                 text_msg = deep_payload
                 lower_clean = text_msg.lower()
             else:
@@ -3029,21 +3180,24 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         if lower_clean in ('/start', '/help', 'hi', 'hello', 'hey', 'menu', 'start'):
             welcome_html = (
                 "🎧 <b>Welcome to MP3aud.io Personal Music Assistant!</b>\n\n"
-                "Text me right here in Telegram for any song, artist, or playlist mood — I'll reply directly in this chat with <b>playable audio tracks</b> and <b>1-click MP3/ZIP downloads</b>:\n\n"
-                "• <b>Playlist Curation:</b> <i>\"Send me a chill late-night synthwave playlist\"</i>\n"
-                "• <b>Fresh Mixes:</b> <i>\"Make me a new playlist\"</i> or tap a button below\n"
-                "• <b>Any Song or Artist:</b> <i>\"Blinding Lights by The Weeknd\"</i>\n"
-                "• <b>Any Link:</b> Paste a YouTube, SoundCloud, or TikTok link to extract 320kbps MP3s!\n\n"
-                "👇 <b>Tap a vibe below or type any request to start:</b>"
+                "I curate personalized music playlists that you can <b>listen to directly inside Telegram</b>, stream continuously, and download in full 320kbps MP3s!\n\n"
+                "• <b>Vibe Playlist:</b> <i>\"Send me a chill late-night synthwave playlist\"</i>\n"
+                "• <b>Workout Hype:</b> <i>\"90s hip hop workout playlist\"</i>\n"
+                "• <b>Any Artist:</b> <i>\"Top tracks by The Weeknd\"</i>\n"
+                "• <b>Media Links:</b> Paste any YouTube, SoundCloud, or TikTok link for 320kbps MP3 extraction!\n\n"
+                "👇 <b>Tap a vibe below to generate your first playable playlist right now:</b>"
             )
             starter_kb = [
                 [
                     {"text": "🌙 Synthwave Mix", "callback_data": "curate:chill late-night synthwave playlist"},
-                    {"text": "🏋️ 90s Workout", "callback_data": "curate:90s hip hop workout playlist"}
+                    {"text": "🏋️ Workout Hype", "callback_data": "curate:90s hip hop workout playlist"}
                 ],
                 [
                     {"text": "☕ Lo-Fi Study", "callback_data": "curate:lo-fi study beats playlist"},
-                    {"text": "🔄 Surprise Playlist", "callback_data": "curate:send me a new playlist"}
+                    {"text": "🔥 Top Hits", "callback_data": "curate:today top hits playlist"}
+                ],
+                [
+                    {"text": "🎲 Surprise Playlist", "callback_data": "curate:send me a new playlist"}
                 ]
             ]
             requests.post(f"{api_base}/sendMessage", json={
@@ -3097,19 +3251,30 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
             f"{t['index']}. <b>{_tg_esc(t['title'])}</b> — {_tg_esc(t['artist'])} ({_tg_esc(t['duration'])})"
             for t in tracks[:6]
         ])
-        summary_html = f"🎵 <b>{_tg_esc(playlist_title)}</b>\n{_tg_esc(reply_text)}\n\n{track_lines}"
+        summary_html = (
+            f"🎵 <b>{_tg_esc(playlist_title)}</b>\n"
+            f"{_tg_esc(reply_text)}\n\n"
+            f"{track_lines}\n\n"
+            f"👇 <i>Play individual tracks directly in this chat below, or tap an action:</i>"
+        )
+
+        listen_btn = {"text": "🎧 Open Full Web Player", "url": web_chat_url}
+        if web_chat_url.startswith("https://"):
+            listen_btn = {"text": "▶️ Listen in Telegram Mini-App", "web_app": {"url": web_chat_url}}
 
         inline_kb = [
             [
-                {"text": "🔄 Curate New Playlist", "callback_data": "curate:send me a new playlist"},
-                {"text": "⬇️ Download MP3" if len(tracks) == 1 else "📦 Download ZIP", "url": single_mp3_url if len(tracks) == 1 else zip_download_url}
+                {"text": "🔄 Next Playlist", "callback_data": "curate:send me a new playlist"},
+                {"text": "⬇️ Download MP3" if len(tracks) == 1 else "📦 Download ZIP (320kbps)", "url": single_mp3_url if len(tracks) == 1 else zip_download_url}
             ],
             [
-                {"text": "🌙 Synthwave", "callback_data": "curate:synthwave playlist"},
-                {"text": "🏋️ Workout", "callback_data": "curate:workout playlist"},
-                {"text": "☕ Lo-Fi", "callback_data": "curate:lofi playlist"}
+                {"text": "🌙 Synthwave", "callback_data": "curate:chill synthwave playlist"},
+                {"text": "🏋️ Workout", "callback_data": "curate:workout hype playlist"},
+                {"text": "☕ Lo-Fi", "callback_data": "curate:lofi study beats"}
             ],
-            [{"text": "🎧 Open in Web Player", "url": web_chat_url}]
+            [
+                listen_btn
+            ]
         ]
 
         requests.post(f"{api_base}/sendMessage", json={
@@ -3120,19 +3285,13 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
             **biz_params
         }, timeout=10)
 
-        # Send direct playable audio bubbles in Telegram for each track that has a preview stream
+        # Send direct playable audio bubbles in Telegram for each track
         for t in tracks[:6]:
-            preview_url = t.get("preview_url")
-            if preview_url:
-                requests.post(f"{api_base}/sendAudio", json={
-                    "chat_id": chat_id,
-                    "audio": preview_url,
-                    "title": t.get("title", "Track"),
-                    "performer": t.get("artist", "Artist"),
-                    "thumbnail": t.get("artwork_url", ""),
-                    "caption": f"🎵 {t.get('title')} — {t.get('artist')}\n💿 {t.get('album', '')}",
-                    **biz_params
-                }, timeout=12)
+            try:
+                send_telegram_audio_track(api_base, chat_id, t, biz_params)
+            except Exception as audio_err:
+                logger.warning(f"Error sending playable audio track to Telegram: {audio_err}")
+
     except Exception as e:
         logger.error(f"Telegram bot async handler error: {e}")
 
