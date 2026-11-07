@@ -407,14 +407,7 @@ def get_ai_completion(messages, custom_key=None, force_json=True):
             res = call_openai_direct(messages, k, model="gpt-4o-mini", timeout_sec=5.0, force_json=force_json)
             if res: return res
 
-    # 1. Primary: Server OpenAI (gpt-4o-mini - fast, natural conversation, 100% reliable)
-    openai_key = os.environ.get("OPENAI_API_KEY", "").strip().strip("`'\"")
-    if openai_key:
-        res = call_openai_direct(messages, openai_key, model="gpt-4o-mini", timeout_sec=5.0, force_json=force_json)
-        if res:
-            return res
-
-    # 2. Secondary: Server Groq (qwen/qwen3.8-27b or openai/gpt-oss-120b)
+    # 1. Primary: Server Groq (qwen/qwen3.8-27b - ultra-fast 350ms inference on Groq Cloud)
     groq_key = (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip().strip("`'\"")
     if groq_key:
         res = call_groq_direct(messages, groq_key, model="qwen/qwen3.8-27b", timeout_sec=4.0, force_json=force_json)
@@ -423,6 +416,13 @@ def get_ai_completion(messages, custom_key=None, force_json=True):
         res2 = call_groq_direct(messages, groq_key, model="openai/gpt-oss-120b", timeout_sec=4.0, force_json=force_json)
         if res2:
             return res2
+
+    # 2. Secondary: Server OpenAI (gpt-4o-mini)
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip().strip("`'\"")
+    if openai_key:
+        res = call_openai_direct(messages, openai_key, model="gpt-4o-mini", timeout_sec=4.0, force_json=force_json)
+        if res:
+            return res
 
     # 3. Third: Fallback to SDK client
     ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
