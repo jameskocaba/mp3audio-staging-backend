@@ -2967,6 +2967,37 @@ _RUNTIME_BOT_CONFIG = {
     "whatsapp_number": os.environ.get('WHATSAPP_NUMBER', '').strip()
 }
 
+def auto_register_telegram_webhook():
+    """Silently registers the Telegram Bot Webhook with Render on boot so no manual setup is required."""
+    time.sleep(4)
+    token = (_RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    if token and ':' in token:
+        try:
+            # 1. Fetch real username
+            me_resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=6)
+            if me_resp.status_code == 200:
+                username = (me_resp.json().get("result") or {}).get("username")
+                if username:
+                    _RUNTIME_BOT_CONFIG["telegram_bot_username"] = username
+                    logger.warning(f"Telegram Bot verified on boot: @{username}")
+
+            # 2. Register webhook
+            webhook_url = f"{PUBLIC_URL.rstrip('/')}/webhook/telegram/{token}"
+            resp = requests.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={
+                    "url": webhook_url,
+                    "allowed_updates": ["message", "edited_message", "business_message", "edited_business_message", "callback_query"],
+                    "drop_pending_updates": False
+                },
+                timeout=10
+            )
+            logger.warning(f"Telegram webhook auto-registration status: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Telegram webhook auto-registration notice: {e}")
+
+Thread(target=auto_register_telegram_webhook, daemon=True).start()
+
 def _tg_esc(val):
     return _html_mod.escape(str(val or ''))
 
@@ -3028,7 +3059,7 @@ def get_bot_info():
 
 @app.route('/api/bot/setup-telegram', methods=['POST'])
 def setup_telegram_webhook():
-    """Registers the Telegram Bot Webhook URL (embedding the token in the webhook path so all workers/restarts stay statelessly authenticated)."""
+    """Registers the Telegram Bot Webhook URL or binds a dedicated Telegram phone number."""
     data = request.json or {}
     bot_token = (data.get('bot_token') or _RUNTIME_BOT_CONFIG.get("telegram_bot_token") or os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
     tg_phone = (data.get('telegram_phone') or '').strip()
@@ -3036,8 +3067,22 @@ def setup_telegram_webhook():
         _RUNTIME_BOT_CONFIG["telegram_phone"] = tg_phone
         _RUNTIME_BOT_CONFIG["whatsapp_number"] = tg_phone
 
+    if not bot_token and not tg_phone:
+        return jsonify({"error": "Please provide either a Telegram Bot Token or a Telegram Phone Number."}), 400
+
+    tg_phone_clean = re.sub(r'[^\d+]', '', tg_phone)
+    if tg_phone_clean and not tg_phone_clean.startswith('+'):
+        tg_phone_clean = '+' + tg_phone_clean
+
+    # If only phone number is configured without a BotFather token
     if not bot_token:
-        return jsonify({"error": "Please paste your Telegram Bot Token from @BotFather first."}), 400
+        tg_url = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else "https://t.me/MP3audioBot"
+        return jsonify({
+            "ok": True,
+            "telegram_phone": tg_phone,
+            "telegram_url": tg_url,
+            "bot_username": tg_phone
+        }), 200
 
     _RUNTIME_BOT_CONFIG["telegram_bot_token"] = bot_token
 
@@ -3071,7 +3116,7 @@ def setup_telegram_webhook():
         out = resp.json()
         final_user = detected_username or _RUNTIME_BOT_CONFIG.get('telegram_bot_username') or 'MP3audioBot'
         out["bot_username"] = f"@{final_user}"
-        out["telegram_url"] = f"https://t.me/{final_user}?start=welcome"
+        out["telegram_url"] = f"https://t.me/{tg_phone_clean}" if tg_phone_clean else f"https://t.me/{final_user}?start=welcome"
         out["telegram_phone"] = _RUNTIME_BOT_CONFIG.get("telegram_phone", "")
         return jsonify(out), resp.status_code
     except Exception as e:
