@@ -130,6 +130,7 @@ class User(db.Model):
     stripe_customer_id = db.Column(db.String(120), nullable=True)
     subscription_active = db.Column(db.Boolean, default=False)
     free_video_used = db.Column(db.Boolean, default=False)
+    playlists_generated = db.Column(db.Integer, default=0)
 
 class ConversionJob(db.Model):
     id = db.Column(db.String(120), primary_key=True)
@@ -250,6 +251,7 @@ def initialize_database():
                     db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(120)'))
                     db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS subscription_active BOOLEAN DEFAULT FALSE'))
                     db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS free_video_used BOOLEAN DEFAULT FALSE'))
+                    db.session.execute(text('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS playlists_generated INTEGER DEFAULT 0'))
                     db.session.commit()
                 else:
                     try: db.session.execute(text('ALTER TABLE user ADD COLUMN stripe_customer_id VARCHAR(120)'))
@@ -257,6 +259,8 @@ def initialize_database():
                     try: db.session.execute(text('ALTER TABLE user ADD COLUMN subscription_active BOOLEAN DEFAULT FALSE'))
                     except: pass
                     try: db.session.execute(text('ALTER TABLE user ADD COLUMN free_video_used BOOLEAN DEFAULT FALSE'))
+                    except: pass
+                    try: db.session.execute(text('ALTER TABLE user ADD COLUMN playlists_generated INTEGER DEFAULT 0'))
                     except: pass
             except Exception as e:
                 db.session.rollback()
@@ -857,12 +861,15 @@ def get_current_user():
             user.free_video_used = True
             db.session.commit()
 
+    free_pls_used = getattr(user, 'playlists_generated', 0) or 0
     return jsonify({
         "authenticated": not is_guest,
         "email": None if is_guest else user.email,
         "paid_track_credits": user.paid_track_credits,
         "subscription_active": getattr(user, 'subscription_active', False),
         "free_video_used": has_used_free_video,
+        "playlists_generated": free_pls_used,
+        "free_playlists_remaining": max(0, 5 - free_pls_used),
         "token": session_token
     })
 
@@ -1673,125 +1680,17 @@ queue_worker.start()
 # Renamed to avoid adblockers that strictly block requests containing the word "upload"
 @app.route('/process_local_files', methods=['POST'])
 def process_local_files():
-    user = get_or_create_user()
-    session_id = request.form.get('session_id', str(uuid.uuid4()))
-    
-    if 'files' not in request.files:
-        return jsonify({"error": "No files provided"}), 400
-        
-    uploaded_files = request.files.getlist('files')
-    if not uploaded_files or uploaded_files[0].filename == '':
-        return jsonify({"error": "No files selected"}), 400
-
-    total_tracks = len(uploaded_files)
-    
-    increase_quality = request.form.get('increase_quality') == 'true'
-    attach_lyrics = request.form.get('attach_lyrics') == 'true'
-    organize_genre = request.form.get('organize_genre') == 'true'
-    auto_add_album_art = request.form.get('auto_add_album_art') == 'true'
-    video_to_mp3 = request.form.get('video_to_mp3') == 'true'
-    is_ringtone = request.form.get('is_ringtone') == 'true'
-    start_time = request.form.get('start_time')
-    end_time = request.form.get('end_time')
-
-    video_extensions = {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'flv', 'wmv', '3gp', 'ts'}
-    video_count = 0
-    for file in uploaded_files:
-        ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
-        if ext in video_extensions:
-            video_count += 1
-
-    if video_count > 0:
-        video_to_mp3 = True
-    if video_to_mp3:
-        is_ringtone = True
-
-    # Check if user has already used their first free video to mp3 conversion
-    has_used_free_video = getattr(user, 'free_video_used', False)
-    if not has_used_free_video:
-        prior_video_job = ConversionJob.query.filter_by(user_id=user.id, video_to_mp3=True).filter(ConversionJob.status.in_(['queued', 'processing', 'completed'])).first()
-        if prior_video_job:
-            has_used_free_video = True
-            user.free_video_used = True
-            db.session.commit()
-
-    free_video_applied = False
-    payable_video_count = 0
-
-    if video_to_mp3 and video_count > 0:
-        if not has_used_free_video:
-            free_video_applied = True
-            payable_video_count = max(0, video_count - 1)
-        else:
-            payable_video_count = video_count
-    elif video_to_mp3 and video_count == 0:
-        if not has_used_free_video and total_tracks > 0:
-            free_video_applied = True
-            payable_video_count = max(0, total_tracks - 1)
-        else:
-            payable_video_count = total_tracks
-
-    total_credits_needed = max(0, total_tracks - 5) * 1
-    total_credits_needed += payable_video_count * 5
-
-    if auto_add_album_art: total_credits_needed += max(0, total_tracks - 5) * 1
-    if increase_quality: total_credits_needed += total_tracks * 1
-    if attach_lyrics: total_credits_needed += total_tracks * 10
-    
-    is_premium_job = attach_lyrics or increase_quality or (payable_video_count > 0)
-    
-    payment_method = None
-    if not is_premium_job and total_tracks <= 5:
-        payment_method = 'always_free'
-        if free_video_applied:
-            user.free_video_used = True
-            db.session.commit()
-    elif user.paid_track_credits >= total_credits_needed:
-        user.paid_track_credits -= total_credits_needed
-        payment_method = 'credits'
-        if free_video_applied:
-            user.free_video_used = True
-            db.session.commit()
-    else:
-        if free_video_applied:
-            error_detail = f"Your first video is free! Converting {video_count} video file(s) requires {total_credits_needed} credits for the {payable_video_count} additional video(s) (5 credits each)."
-        elif video_to_mp3 and video_count > 0:
-            error_detail = f"Video to MP3 conversion requires {total_credits_needed} credits ({video_count} video file(s) at 5 credits each)."
-        else:
-            error_detail = f"This action requires {total_credits_needed} credits."
-
-        return jsonify({
-            "error": f"{error_detail} Please log in and purchase credits.", 
-            "requires_payment": True
-        }), 403
-
-    session_dir = os.path.join(DOWNLOAD_FOLDER, session_id, 'uploads')
-    os.makedirs(session_dir, exist_ok=True)
-    
-    valid_entries = []
-    for i, file in enumerate(uploaded_files):
-        original_name = file.filename
-        filename = secure_filename(original_name)
-        
-        # Ensure we always keep a proper extension and valid name
-        ext = original_name.split('.')[-1].lower() if '.' in original_name else 'mp3'
-        if not filename or filename == ext or filename.startswith('.'):
-            filename = f"track_{i+1}_{int(time.time())}.{ext}"
-            
-        file_path = os.path.join(session_dir, filename)
-        file.save(file_path)
-        valid_entries.append((i+1, f"local:{file_path}", filename, "Unknown Artist", ""))
-
-    queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
-    job_priority = 1 if payment_method == 'credits' else 0
-
-    new_job = ConversionJob(id=session_id, user_id=user.id, payment_method=payment_method, status='queued', priority=job_priority, total=total_tracks, entries=valid_entries, url="File Upload", user_email=user.email if not user.email.startswith('anon_') else None, start_time=start_time, end_time=end_time, transcribe_audio=attach_lyrics, increase_quality=increase_quality, organize_genre=organize_genre, auto_add_album_art=auto_add_album_art, video_to_mp3=video_to_mp3, is_ringtone=is_ringtone, free_video_used=free_video_applied)
-    db.session.add(new_job)
-    db.session.commit()
-    return jsonify({"session_id": session_id, "total_tracks": total_tracks, "status": "queued", "queue_position": queue_position}), 200
+    return jsonify({
+        "error": "Server media conversions are disabled to keep render bandwidth low. Connect and stream instantly via Apple Music, Spotify, or YouTube Music!",
+        "disabled": True
+    }), 410
 
 @app.route('/start_conversion', methods=['POST'])
 def start_conversion():
+    return jsonify({
+        "error": "Server media conversions are disabled to keep render bandwidth low. Connect and stream instantly via Apple Music, Spotify, or YouTube Music!",
+        "disabled": True
+    }), 410
     user = get_or_create_user()
     data = request.json
     raw_url = data.get('url', '').strip()
@@ -1982,25 +1881,9 @@ def cancel_conversion():
 
 @app.route('/download/<session_id>/<filename>')
 def download_file(session_id, filename):
-    session_id = secure_filename(session_id)
-    filename = secure_filename(filename)
-    
-    # Intercept the request and redirect to a secure AWS S3 URL if configured
-    if s3_client and S3_BUCKET:
-        try:
-            presigned_url = s3_client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': S3_BUCKET, 'Key': f"downloads/{session_id}/{filename}"},
-                ExpiresIn=3600 # Link expires in 1 hour
-            )
-            return redirect(presigned_url)
-        except ClientError as e:
-            logger.error(f"Error generating presigned URL: {e}")
-            return "File not found", 404
-            
-    file_path = os.path.join(DOWNLOAD_FOLDER, session_id, filename)
-    if os.path.exists(file_path): return send_file(file_path, as_attachment=True)
-    return "File not found", 404
+    return jsonify({
+        "error": "Direct file downloads are disabled to save server bandwidth. Enjoy instant streaming via Apple Music, Spotify, or YouTube Music!"
+    }), 410
 
 @app.route('/api/top-urls', methods=['GET', 'OPTIONS'])
 def get_top_urls():
@@ -2473,8 +2356,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         mode = "ringtone" if is_ringtone_req else ("playlist" if len(tracks) > 1 else "single")
         reply = (
             f"I loaded **{playlist_title}** ({len(tracks)} {'tracks' if len(tracks) > 1 else 'track'}) from your link! "
-            f"Tap play below to preview, or hit **Download MP3** {'/ **Download Playlist (.ZIP)** ' if len(tracks) > 1 else ''}"
-            f"for full 320kbps audio with HD cover art."
+            f"Tap play below to preview, or stream directly on Apple Music, Spotify, and YouTube Music."
         )
         for t in tracks:
             attach_streaming_links_to_track(t)
@@ -2522,13 +2404,13 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         return {
             "success": True,
             "mode": "chat",
-            "reply": "Super easy! 📥 For any single song, just tap the **MP3** button right inside its track card. If you want the whole playlist at once, tap **Download Full Playlist (.ZIP)** at the bottom of the mix and I'll bundle all the 320kbps MP3s with embedded HD album art into one ZIP file for you!",
+            "reply": "To keep server bandwidth low and streaming lightning-fast, MP3aud.io connects directly with **Apple Music**, **Spotify**, and **YouTube Music**! ⚡ Whenever I curate a playlist or track for you, tap the 🍎 Apple Music, 🟢 Spotify, or 🔴 YouTube Music button to open and stream it instantly in your favorite app. You can also listen to audio preview clips right inside our chat bubbles!",
             "follow_up_note": "Want me to line up a playlist right now so you can try it out?",
             "suggestions": [
                 "🎲 Curate a fresh playlist",
-                "📱 How do I make an iPhone ringtone?",
-                "✨ What audio quality are the MP3s?",
-                "🔥 Send me today's top hits"
+                "🔥 Send me today's top hits",
+                "💰 How do credits work?",
+                "☕ Lo-fi study mix"
             ],
             "tracks": []
         }
@@ -2776,7 +2658,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
                 return {
                     "success": True,
-                    "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
+                    "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
                     "mode": "playlist",
                     "playlist_title": p_title,
                     "playlist_vibe": p_vibe,
@@ -2816,7 +2698,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             attach_streaming_links_to_track(t)
         return {
             "success": True,
-            "reply": f"Here is a fresh **{p_title}**! Tap play on any audio bubble to listen right in the chat, download individual 320kbps MP3s, or grab the full playlist ZIP.",
+            "reply": f"Here is a fresh **{p_title}**! Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
             "mode": "playlist",
             "playlist_title": p_title,
             "playlist_vibe": p_vibe,
@@ -2841,7 +2723,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         mode = "ringtone" if is_ringtone_req else "single"
         reply = (
             f"Here is **{t['title']}** by **{t['artist']}**! "
-            f"{'Tap **Download Ringtone** to get your custom iPhone (.M4R) & Android (.MP3) ringtone, or hit play to preview it first.' if is_ringtone_req else 'Tap play in the bubble below to listen immediately, or click **Download MP3** for the full 320kbps tagged file.'}"
+            f"Tap play in the bubble below to preview immediately, or stream on Apple Music, Spotify, and YouTube Music."
         )
         return {
             "success": True,
@@ -2856,7 +2738,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
     p_title = f"{cleaned_query.title()} — Curated Mix"
     return {
         "success": True,
-        "reply": f"I put together a **{cleaned_query.title()}** selection for you ({len(tracks)} tracks). Tap play on any track bubble to listen right here, download individual MP3s, or grab the 1-click Playlist ZIP!",
+        "reply": f"I put together a **{cleaned_query.title()}** selection for you ({len(tracks)} tracks). Tap play on any track bubble to preview right here, or stream with 1 tap on Apple Music, Spotify, or YouTube Music!",
         "mode": "playlist",
         "playlist_title": p_title,
         "playlist_vibe": f"Curated for \"{cleaned_query}\" • 320kbps & ID3 Tagged",
@@ -2867,175 +2749,80 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
 @app.route('/api/assistant/chat', methods=['POST'])
 def assistant_chat():
+    user = get_or_create_user()
     data = request.json or {}
     user_message = data.get('message', '').strip()
     history = data.get('history', [])
     options = data.get('options', {})
     current_tracks = data.get('current_tracks', [])
     result = curate_music_response(user_message, history=history, options=options, current_tracks=current_tracks)
-    status_code = 200 if result.get("success") else 400
-    return jsonify(result), status_code
+    
+    if not result.get("success"):
+        return jsonify(result), 400
+
+    # Determine if a playlist was generated (free 24/7 chat for general conversation)
+    mode = result.get('mode')
+    tracks = result.get('tracks', [])
+    is_playlist_result = (mode == 'playlist') or (len(tracks) > 1)
+
+    if is_playlist_result:
+        used_pls = getattr(user, 'playlists_generated', 0) or 0
+        has_sub = getattr(user, 'subscription_active', False)
+        credits = getattr(user, 'paid_track_credits', 0) or 0
+
+        # After 5 free playlists, user must purchase / have credits
+        if used_pls >= 5 and not has_sub:
+            if credits < 1:
+                return jsonify({
+                    "success": False,
+                    "requires_payment": True,
+                    "mode": "chat",
+                    "playlists_generated": used_pls,
+                    "free_playlists_remaining": 0,
+                    "credits_needed": 1,
+                    "reply": (
+                        "⚡ **You've used all 5 of your free playlist generations!**\n\n"
+                        "You can continue chatting with me about music, artists, and songs 24/7 at no charge. "
+                        "To curate and generate more custom playlists, top up with our **350 Credits Pack for $3.99** (~$0.01 per playlist) by clicking **Sign In / Credits** at the top right."
+                    ),
+                    "tracks": [],
+                    "suggestions": [
+                        "💳 Buy 350 Credits ($3.99)",
+                        "💬 Tell me a music fact",
+                        "🎵 What was the best album of 1999?"
+                    ]
+                }), 200
+
+            # Deduct 1 credit per playlist generation
+            user.paid_track_credits -= 1
+            user.playlists_generated = used_pls + 1
+            db.session.commit()
+            result["paid_credits_used"] = 1
+            result["credits_remaining"] = user.paid_track_credits
+        else:
+            # Within the 5 free playlists or active subscription
+            if not has_sub:
+                user.playlists_generated = used_pls + 1
+                db.session.commit()
+            result["free_playlists_used"] = user.playlists_generated
+            result["free_playlists_remaining"] = max(0, 5 - user.playlists_generated)
+
+    return jsonify(result), 200
 
 
 @app.route('/api/assistant/prepare_download', methods=['POST'])
 def assistant_prepare_download():
-    """
-    Queues a ConversionJob from one or more curated chat tracks so the user can download
-    a single tagged MP3/M4R or a complete playlist ZIP directly inside the chat thread.
-    """
-    user = get_or_create_user()
-    data = request.json or {}
-    tracks = data.get('tracks', [])
-    if not tracks or not isinstance(tracks, list):
-        return jsonify({"error": "No tracks provided for download."}), 400
-
-    session_id = data.get('session_id', str(uuid.uuid4()))
-    increase_quality = bool(data.get('increase_quality', False))
-    auto_add_album_art = bool(data.get('auto_add_album_art', True))
-    transcribe_audio = bool(data.get('transcribe_audio', False))
-    is_ringtone = bool(data.get('is_ringtone', False))
-    start_time = data.get('start_time')
-    end_time = data.get('end_time')
-
-    valid_entries = []
-    for idx, t in enumerate(tracks[:MAX_SONGS]):
-        t_title = (t.get('title') or f"Track {idx+1}").strip()
-        t_artist = (t.get('artist') or "Unknown Artist").strip()
-        t_thumb = (t.get('artwork_url') or "").strip()
-        t_query = (t.get('search_query') or t.get('url') or f"ytsearch1:{t_artist} - {t_title} official audio").strip()
-        valid_entries.append((idx + 1, t_query, t_title, t_artist, t_thumb))
-
-    total_tracks = len(valid_entries)
-    total_credits_needed = max(0, total_tracks - 5) * 1
-    if auto_add_album_art:
-        total_credits_needed += max(0, total_tracks - 5) * 1
-    if increase_quality:
-        total_credits_needed += total_tracks * 1
-    if transcribe_audio:
-        total_credits_needed += total_tracks * 10
-
-    is_premium_job = transcribe_audio or increase_quality
-
-    payment_method = None
-    if not is_premium_job and total_tracks <= 5:
-        payment_method = 'always_free'
-    elif getattr(user, 'subscription_active', False):
-        payment_method = 'subscription'
-    elif user.paid_track_credits >= total_credits_needed:
-        user.paid_track_credits -= total_credits_needed
-        payment_method = 'credits'
-    else:
-        return jsonify({
-            "error": f"This download requires {total_credits_needed} credits. Free tier includes up to 5 standard tracks per request—toggle off paid add-ons or add credits!",
-            "requires_payment": True,
-            "credits_needed": total_credits_needed
-        }), 403
-
-    # Record in PopularURL so community activity feed stays fresh
-    first_t = tracks[0]
-    playlist_title = data.get('playlist_title') or f"{first_t.get('title', 'Track')} - {first_t.get('artist', '')}"
-    try:
-        synthetic_url = first_t.get('search_query') or f"chat://{uuid.uuid4().hex[:8]}"
-        pop = PopularURL.query.filter_by(url=synthetic_url[:500]).first()
-        if pop:
-            pop.conversion_count += 1
-            pop.last_converted = datetime.utcnow()
-        else:
-            pop = PopularURL(
-                url=synthetic_url[:500],
-                title=playlist_title[:200],
-                artist=(first_t.get('artist') or 'MP3aud.io Assistant')[:200],
-                thumbnail_url=(first_t.get('artwork_url') or '')[:500]
-            )
-            db.session.add(pop)
-    except Exception:
-        db.session.rollback()
-
-    queue_position = ConversionJob.query.filter_by(status='queued').count() + 1
-    job_priority = 1 if payment_method in ('credits', 'subscription') else 0
-
-    new_job = ConversionJob(
-        id=session_id,
-        user_id=user.id,
-        payment_method=payment_method,
-        status='queued',
-        priority=job_priority,
-        total=total_tracks,
-        entries=valid_entries,
-        url=playlist_title[:500],
-        user_email=user.email if not user.email.startswith('anon_') else None,
-        start_time=start_time,
-        end_time=end_time,
-        transcribe_audio=transcribe_audio,
-        increase_quality=increase_quality,
-        organize_genre=False,
-        auto_add_album_art=auto_add_album_art,
-        video_to_mp3=False,
-        is_ringtone=is_ringtone
-    )
-    db.session.add(new_job)
-    db.session.commit()
-
     return jsonify({
-        "session_id": session_id,
-        "total_tracks": total_tracks,
-        "status": "queued",
-        "queue_position": queue_position,
-        "single_mp3_url": f"/download_mp3/{session_id}",
-        "zip_url": f"/download/{session_id}/playlist_backup.zip"
-    }), 200
+        "error": "Server audio downloads have been disabled to keep render bandwidth low. Connect and stream instantly via Apple Music, Spotify, or YouTube Music!",
+        "disabled": True
+    }), 410
 
 
 @app.route('/download_mp3/<session_id>', methods=['GET'])
 def download_single_mp3(session_id):
-    """
-    Extracts and serves the individual .mp3 (or .m4r if format=m4r) directly from the job's archive
-    so users clicking 'Download MP3' on a single track bubble get a direct .mp3 file!
-    """
-    session_id = secure_filename(session_id)
-    want_ext = request.args.get('ext', 'mp3').lower()
-    if want_ext not in ('mp3', 'm4r'):
-        want_ext = 'mp3'
-
-    zip_bytes_io = None
-    local_zip = os.path.join(DOWNLOAD_FOLDER, session_id, "playlist_backup.zip")
-    if os.path.exists(local_zip):
-        zip_bytes_io = local_zip
-    elif s3_client and S3_BUCKET:
-        try:
-            s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=f"downloads/{session_id}/playlist_backup.zip")
-            zip_bytes_io = io.BytesIO(s3_obj['Body'].read())
-        except Exception as e:
-            logger.error(f"Could not fetch zip from S3 for single MP3 extraction: {e}")
-
-    if not zip_bytes_io:
-        return "File not found or expired", 404
-
-    try:
-        with zipfile.ZipFile(zip_bytes_io, 'r') as z:
-            names = z.namelist()
-            target_member = None
-            for name in names:
-                if name.lower().endswith(f".{want_ext}"):
-                    target_member = name
-                    break
-            if not target_member and names:
-                target_member = names[0]
-            if not target_member:
-                return "Archive is empty", 404
-
-            file_data = z.read(target_member)
-            download_filename = os.path.basename(target_member)
-            mime = 'audio/mp4' if download_filename.lower().endswith('.m4r') else 'audio/mpeg'
-            return send_file(
-                io.BytesIO(file_data),
-                mimetype=mime,
-                as_attachment=True,
-                download_name=download_filename
-            )
-    except Exception as e:
-        logger.error(f"Error extracting single MP3 from archive: {e}")
-        return redirect(f"/download/{session_id}/playlist_backup.zip")
+    return jsonify({
+        "error": "Direct file downloads are disabled to save server bandwidth. Enjoy instant streaming via Apple Music, Spotify, or YouTube Music!"
+    }), 410
 
 
 # ==============================================================================
