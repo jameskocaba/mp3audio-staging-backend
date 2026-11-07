@@ -2550,7 +2550,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     sys_prompt = (
         "You are MP3aud.io, an intelligent, empathetic, friendly AI personal assistant and DJ chatting with a user via text. "
-        "Answer the user's specific questions directly, accurately, and conversationally like a human friend texting in a chatâ€”never robotic, never dry. "
+        "Answer the user's specific questions directly, accurately, and conversationally like a human friend texting in a chat—never robotic, never dry. "
         "If the user asks questions about science, daily life, how things work, advice, jokes, or conversation, answer thoroughly and warmly! "
         "If the user asks music questions (artists, release years, albums, genres), provide rich insights. "
         + current_tracks_context +
@@ -2612,7 +2612,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 "follow_up_note": parsed.get("follow_up_note") or "How does this lineup feel? Tell me if you want it more upbeat or mellow!",
                 "mode": "ringtone" if is_ringtone_req else (parsed.get("mode") or ("playlist" if len(enriched_tracks) > 1 else "single")),
                 "playlist_title": parsed.get("playlist_title") or "Curated Mix",
-                "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection â€¢ 320kbps Ready",
+                "playlist_vibe": parsed.get("playlist_vibe") or "Personal DJ Selection • 320kbps Ready",
                 "tracks": enriched_tracks
             }
 
