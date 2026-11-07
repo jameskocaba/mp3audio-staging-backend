@@ -314,7 +314,7 @@ Thread(target=initialize_database, daemon=True).start()
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-def call_groq_direct(messages, api_key, model="openai/gpt-oss-120b", timeout_sec=8.0, force_json=False):
+def call_groq_direct(messages, api_key, model="qwen/qwen3.8-27b", timeout_sec=4.5, force_json=False):
     """
     Direct HTTPS caller for Groq Cloud API.
     Bypasses httpx/openai SDK version conflicts completely using standard requests.
@@ -327,36 +327,34 @@ def call_groq_direct(messages, api_key, model="openai/gpt-oss-120b", timeout_sec
         "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json"
     }
-    
-    candidate_models = [model] if model else []
-    candidate_models += ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "allam-2-7b", "llama-3.1-8b-instant"]
-    seen = set()
-    models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
-
-    for candidate in models_to_try:
-        payload = {
-            "model": candidate,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 1024
-        }
-        if force_json:
-            payload["response_format"] = {"type": "json_object"}
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
-            if resp.ok:
-                data = resp.json()
-                choices = data.get("choices", [])
-                if choices and choices[0].get("message"):
-                    return choices[0]["message"].get("content", "").strip()
-            else:
-                logger.warning(f"Groq direct call with {candidate} returned status {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.warning(f"Groq direct call exception with {candidate}: {e}")
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
+    if force_json:
+        payload["response_format"] = {"type": "json_object"}
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+        if resp.ok:
+            data = resp.json()
+            choices = data.get("choices", [])
+            if choices and choices[0].get("message"):
+                msg_obj = choices[0]["message"]
+                content = (msg_obj.get("content") or "").strip()
+                if not content:
+                    content = (msg_obj.get("reasoning") or "").strip()
+                if content:
+                    return content
+        else:
+            logger.warning(f"Groq direct call with {model} returned status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.warning(f"Groq direct call exception with {model}: {e}")
 
     return None
 
-def call_openai_direct(messages, api_key, model="gpt-4o-mini", timeout_sec=8.0, force_json=False):
+def call_openai_direct(messages, api_key, model="gpt-4o-mini", timeout_sec=5.0, force_json=False):
     """
     Direct HTTPS caller for OpenAI API.
     Bypasses httpx/openai SDK version conflicts completely.
@@ -383,11 +381,68 @@ def call_openai_direct(messages, api_key, model="gpt-4o-mini", timeout_sec=8.0, 
             data = resp.json()
             choices = data.get("choices", [])
             if choices and choices[0].get("message"):
-                return choices[0]["message"].get("content", "").strip()
+                content = (choices[0]["message"].get("content") or "").strip()
+                if content:
+                    return content
         else:
             logger.warning(f"OpenAI direct call returned status {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.warning(f"OpenAI direct call exception: {e}")
+    return None
+
+def get_ai_completion(messages, custom_key=None, force_json=True):
+    """
+    Unified high-speed AI caller.
+    Prioritizes OpenAI gpt-4o-mini (fastest, most natural human-like conversation, ~500ms)
+    and seamlessly falls back to Groq Cloud (qwen/qwen3.8-27b).
+    Strictly capped at 5 seconds to guarantee Gunicorn never times out.
+    """
+    # 0. User custom key
+    if custom_key and isinstance(custom_key, str) and custom_key.strip():
+        k = custom_key.strip()
+        if k.startswith("gsk_"):
+            res = call_groq_direct(messages, k, model="qwen/qwen3.8-27b", timeout_sec=4.5, force_json=force_json)
+            if res: return res
+        elif k.startswith("sk-") and not k.startswith("sk-or-"):
+            res = call_openai_direct(messages, k, model="gpt-4o-mini", timeout_sec=5.0, force_json=force_json)
+            if res: return res
+
+    # 1. Primary: Server OpenAI (gpt-4o-mini - fast, natural conversation, 100% reliable)
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip().strip("`'\"")
+    if openai_key:
+        res = call_openai_direct(messages, openai_key, model="gpt-4o-mini", timeout_sec=5.0, force_json=force_json)
+        if res:
+            return res
+
+    # 2. Secondary: Server Groq (qwen/qwen3.8-27b or openai/gpt-oss-120b)
+    groq_key = (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip().strip("`'\"")
+    if groq_key:
+        res = call_groq_direct(messages, groq_key, model="qwen/qwen3.8-27b", timeout_sec=4.0, force_json=force_json)
+        if res:
+            return res
+        res2 = call_groq_direct(messages, groq_key, model="openai/gpt-oss-120b", timeout_sec=4.0, force_json=force_json)
+        if res2:
+            return res2
+
+    # 3. Third: Fallback to SDK client
+    ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
+    if ai_client:
+        try:
+            req_kwargs = {
+                "model": ai_model,
+                "messages": messages,
+                "temperature": 0.7,
+                "timeout": 5.0
+            }
+            if supports_json and force_json:
+                req_kwargs["response_format"] = {"type": "json_object"}
+            completion = ai_client.chat.completions.create(**req_kwargs)
+            res = (completion.choices[0].message.content or "").strip()
+            if res:
+                return res
+        except Exception as e:
+            logger.warning(f"SDK fallback call error: {e}")
+
     return None
 
 def get_ai_client_and_model(custom_key=None):
@@ -649,6 +704,30 @@ def health_check():
     return jsonify({"status": "healthy", "has_groq": has_groq, "has_openai": has_openai}), 200
 
 
+@app.route('/api/test_ai', methods=['GET', 'POST'])
+def test_ai():
+    test_messages = [{"role": "user", "content": "Say 'AI is working!' in 4 words."}]
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    groq_key = (os.environ.get("GROQ_API_KEY", "") or os.environ.get("GROQ_KEY", "")).strip()
+    
+    results = {}
+    if openai_key:
+        start = time.time()
+        reply = call_openai_direct(test_messages, openai_key, model="gpt-4o-mini", timeout_sec=4.0)
+        results["openai"] = {"success": bool(reply), "time": round(time.time() - start, 3), "reply": reply}
+    else:
+        results["openai"] = {"success": False, "error": "No OPENAI_API_KEY configured"}
+
+    if groq_key:
+        start = time.time()
+        reply = call_groq_direct(test_messages, groq_key, model="qwen/qwen3.8-27b", timeout_sec=4.0)
+        results["groq"] = {"success": bool(reply), "time": round(time.time() - start, 3), "reply": reply}
+    else:
+        results["groq"] = {"success": False, "error": "No GROQ_API_KEY configured"}
+
+    return jsonify(results), 200
+
+
 @app.route('/api/test_groq', methods=['GET', 'POST'])
 def test_groq():
     custom_key = (request.headers.get("X-AI-Key") or request.args.get("key") or "").strip()
@@ -665,21 +744,20 @@ def test_groq():
     }
     # 1. Fetch available models on this Groq account
     try:
-        models_resp = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=5.0)
+        models_resp = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=3.0)
         available_models = [m["id"] for m in models_resp.json().get("data", [])] if models_resp.ok else []
     except Exception:
         available_models = []
 
     # 2. Pick the best working chat model from what the account supports
     candidate_models = [
+        "qwen/qwen3.8-27b",
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "qwen/qwen3.8-27b",
         "allam-2-7b",
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile"
+        "llama-3.1-8b-instant"
     ]
-    model_to_use = "openai/gpt-oss-120b"
+    model_to_use = "qwen/qwen3.8-27b"
     for m in candidate_models:
         if m in available_models:
             model_to_use = m
@@ -689,10 +767,10 @@ def test_groq():
     payload = {
         "model": model_to_use,
         "messages": [{"role": "user", "content": "Say hello in 5 words."}],
-        "max_tokens": 50
+        "max_tokens": 100
     }
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=10.0)
+        resp = requests.post(url, headers=headers, json=payload, timeout=4.0)
         resp_data = resp.json() if "application/json" in resp.headers.get("Content-Type", "") else resp.text
         return jsonify({
             "success": resp.ok,
@@ -2300,48 +2378,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
             "tracks": tracks
         }
 
-    # 1.5 Check pure conversational greetings, check-ins, or gratitude so we reply like a real human friend
-    if re.match(r'^(hi|hey|hello|yo|sup|what\'?s up|howdy|good morning|good afternoon|good evening)[!.?\s]*$', msg_lower):
-        return {
-            "success": True,
-            "mode": "chat",
-            "reply": "Hey there! 👋 Good to hear from you—I'm right here in the booth lining up tracks. How's your day going? Tell me what kind of mood you're in, what you're up to right now, or drop an artist/song you love and I'll curate something special for you!",
-            "suggestions": [
-                "🌙 Chill late-night synthwave mix",
-                "🏋️ High-energy workout playlist",
-                "☕ Relaxing lo-fi beats while I work",
-                "🎲 Surprise me with your favorite songs"
-            ],
-            "tracks": []
-        }
 
-    if re.match(r'^(hey|hi|hello|yo)?\s*(how are you|how\'?s it going|how are things|what are you up to|wyd|you good)[!.?\s]*$', msg_lower):
-        return {
-            "success": True,
-            "mode": "chat",
-            "reply": "I'm doing great, thanks for asking! 🎧 Just digging through the crates and queuing up some gems. How are *you* feeling today? Tell me if it's been a high-energy day, a long stressful one, or somewhere in between—I'll match the soundtrack to your exact mood.",
-            "suggestions": [
-                "🌿 Had a long day—help me unwind",
-                "🎉 Feeling great! Play something upbeat",
-                "🚗 Need a late-night driving soundtrack",
-                "🍷 Cooking dinner—play warm lounge vibes"
-            ],
-            "tracks": []
-        }
-
-    if re.match(r'^(thanks|thank you|thx|ty|appreciate it|love it|love this|this is fire|fire|awesome|amazing|great picks|so good|dope|nice|cool|perfect)[!.?\s]*$', msg_lower):
-        return {
-            "success": True,
-            "mode": "chat",
-            "reply": "Anytime! 🙌 Nothing makes me happier than when a mix hits just right. Want me to keep that exact wave rolling with a Volume 2, or should we switch up the tempo?",
-            "suggestions": [
-                "🔥 Keep this vibe going (Vol. 2)",
-                "⚡ Take the energy up a notch",
-                "🌙 Smooth it out & go mellower",
-                "🎲 Surprise me with a new genre"
-            ],
-            "tracks": []
-        }
 
     # 1.6 Check for follow-up questions about the current playlist, tracks, artist bios, release years, or how MP3aud.io works
     if re.search(r'\b(how do i|how can i|how to)\b.*\b(download|save|zip|mp3|all|playlist)\b', msg_lower):
@@ -2478,33 +2515,9 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 messages_payload.append({"role": h["role"], "content": str(h["content"])[:500]})
     messages_payload.append({"role": "user", "content": msg})
 
-    raw_content = None
-    if groq_key:
-        raw_content = call_groq_direct(messages_payload, groq_key, model="openai/gpt-oss-120b", timeout_sec=8.0, force_json=True)
-        if not raw_content:
-            raw_content = call_groq_direct(messages_payload, groq_key, model="qwen/qwen3.8-27b", timeout_sec=6.0, force_json=True)
-
+    raw_content = get_ai_completion(messages_payload, custom_key=custom_key, force_json=True)
     if not raw_content:
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip().strip("`'\"")
-        if openai_key:
-            raw_content = call_openai_direct(messages_payload, openai_key, model="gpt-4o-mini", timeout_sec=8.0, force_json=True)
-
-    if not raw_content:
-        ai_client, ai_model, supports_json = get_ai_client_and_model(custom_key)
-        if ai_client:
-            try:
-                req_kwargs = {
-                    "model": ai_model,
-                    "messages": messages_payload,
-                    "temperature": 0.7,
-                    "timeout": 14.0
-                }
-                if supports_json:
-                    req_kwargs["response_format"] = {"type": "json_object"}
-                completion = ai_client.chat.completions.create(**req_kwargs)
-                raw_content = completion.choices[0].message.content.strip()
-            except Exception as e:
-                logger.warning(f"OpenAI SDK fallback call: {e}")
+        raw_content = get_ai_completion(messages_payload, custom_key=custom_key, force_json=False)
 
     if raw_content:
         clean_str = raw_content.strip()
