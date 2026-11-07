@@ -2491,6 +2491,33 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
 
     # 1.6 Check for follow-up questions about the current playlist, tracks, artist bios, release years, or how MP3aud.io works
+    if re.search(r'\b(apple\s*music|spotify|youtube\s*music|streaming|stream in|connect to|export to|sync to)\b', msg_lower):
+        active_title = (active_tracks[0].get("title") if active_tracks else "")
+        pl_name = "your playlist" if not active_title else f"your mix featuring {active_title}"
+        st_links = make_streaming_links_for_query(active_title or "curated playlist")
+        return {
+            "success": True,
+            "mode": "chat",
+            "reply": (
+                f"Connecting {pl_name} to **Apple Music**, **Spotify**, or **YouTube Music** is built right in! ⚡\n\n"
+                f"Whenever a playlist is created, look at the **Connect & Listen On** bar directly inside the playlist card:\n\n"
+                f"• 🍎 **Apple Music:** Tap to open the playlist directly in Apple Music\n"
+                f"• 🟢 **Spotify:** Tap to launch Spotify with your curated tracks\n"
+                f"• 🔴 **YouTube Music:** Tap to stream official audio in YouTube Music\n"
+                f"• 📥 **Export .M3U8:** Download a universal playlist file to drag-and-drop into Apple Music, iTunes, or VLC\n"
+                f"• 📋 **Copy Tracklist:** Copy all songs to paste into Spotify, Apple Music, or SongShift\n\n"
+                f"On every track bubble, you can also tap the 🍎, 🟢, or 🔴 icons next to **⬇ MP3**!"
+            ),
+            "follow_up_note": "Want me to curate a fresh playlist right now so you can stream it?",
+            "suggestions": [
+                "🔥 Send me a synthwave playlist",
+                "🏋️ High-energy workout mix",
+                "☕ Lo-fi study playlist",
+                "🎲 Surprise me with a playlist"
+            ],
+            "tracks": [],
+            "streaming_links": st_links
+        }
     if re.search(r'\b(how do i|how can i|how to)\b.*\b(download|save|zip|mp3|all|playlist)\b', msg_lower):
         return {
             "success": True,
