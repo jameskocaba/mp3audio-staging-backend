@@ -2012,102 +2012,150 @@ import io
 VIBE_PRESET_QUERIES = {
     "synthwave": ("Midnight Neon: Chill Synthwave Mix", "Warm analog synths, retro arpeggios & late-night drive energy", [
         ("Midnight City", "M83"), ("Nightcall", "Kavinsky"), ("Resonance", "Home"),
-        ("After Dark", "Mr.Kitty"), ("Sunset", "The Midnight"), ("Tech Noir", "GUNSHIP")
+        ("After Dark", "Mr.Kitty"), ("Sunset", "The Midnight"), ("Tech Noir", "GUNSHIP"),
+        ("Running in the Night", "FM-84"), ("Blinding Lights", "The Weeknd"), ("Days of Thunder", "The Midnight"),
+        ("A Real Hero", "College & Electric Youth")
     ]),
     "workout": ("High-Octane Gym & Workout Anthems", "Heavy bass, relentless tempo & peak adrenaline", [
         ("Stronger", "Kanye West"), ("Till I Collapse", "Eminem"), ("HUMBLE.", "Kendrick Lamar"),
-        ("POWER", "Kanye West"), ("Eye of the Tiger", "Survivor"), ("Titanium", "David Guetta")
+        ("POWER", "Kanye West"), ("Eye of the Tiger", "Survivor"), ("Titanium", "David Guetta"),
+        ("Lose Yourself", "Eminem"), ("DNA.", "Kendrick Lamar"), ("Can't Hold Us", "Macklemore & Ryan Lewis"),
+        ("Remember the Name", "Fort Minor")
     ]),
     "hip hop": ("Golden Era & Modern Hip-Hop Essentials", "Boom-bap classics, sharp lyricism & iconic 808s", [
         ("N.Y. State of Mind", "Nas"), ("Shook Ones, Pt. II", "Mobb Deep"), ("C.R.E.A.M.", "Wu-Tang Clan"),
-        ("Juicy", "The Notorious B.I.G."), (" Still D.R.E.", "Dr. Dre"), ("Money Trees", "Kendrick Lamar")
+        ("Juicy", "The Notorious B.I.G."), ("Still D.R.E.", "Dr. Dre"), ("Money Trees", "Kendrick Lamar"),
+        ("California Love", "2Pac"), ("Hypnotize", "The Notorious B.I.G."), ("Ms. Jackson", "OutKast"),
+        ("No Role Modelz", "J. Cole")
     ]),
     "chill": ("Late-Night Velvet & Chill Vibes", "Smooth grooves, dreamy textures & laid-back atmosphere", [
-        ("Redbone", "Childish Gambino"), (" Pink + White", "Frank Ocean"), ("Electric Feel", "MGMT"),
-        ("Chamber Of Reflection", "Mac DeMarco"), (" Get Lucky", "Daft Punk"), ("Best Part", "Daniel Caesar")
+        ("Redbone", "Childish Gambino"), ("Pink + White", "Frank Ocean"), ("Electric Feel", "MGMT"),
+        ("Chamber Of Reflection", "Mac DeMarco"), ("Get Lucky", "Daft Punk"), ("Best Part", "Daniel Caesar"),
+        ("The Less I Know the Better", "Tame Impala"), ("Sunflower", "Post Malone & Swae Lee"), ("Heat Waves", "Glass Animals"),
+        ("Space Song", "Beach House")
     ]),
     "lofi": ("Lo-Fi Study & Rainy Window Beats", "Dusty vinyl crackle, warm Rhodes chords & mellow boom-bap", [
         ("Snowman", "WYS"), ("Coffee", "beabadoobee"), ("5:32pm", "The Deli"),
-        ("Affection", "Jinsang"), ("Feather", "Nujabes"), ("Luv(sic) Part 3", "Nujabes")
+        ("Affection", "Jinsang"), ("Feather", "Nujabes"), ("Luv(sic) Part 3", "Nujabes"),
+        ("aruarian dance", "Nujabes"), ("Death Bed (Coffee for Your Head)", "Powfu"), ("Can We Kiss Forever?", "Kina"),
+        ("Warm Breeze", "Kupla")
     ]),
     "acoustic": ("Warm Coffeehouse Acoustic Sessions", "Intimate fingerpicking, rich vocals & stripped-back storytelling", [
         ("Fast Car", "Tracy Chapman"), ("Banana Pancakes", "Jack Johnson"), ("Skinny Love", "Bon Iver"),
-        ("Blackbird", "The Beatles"), ("Ho Hey", "The Lumineers"), ("Photograph", "Ed Sheeran")
+        ("Blackbird", "The Beatles"), ("Ho Hey", "The Lumineers"), ("Photograph", "Ed Sheeran"),
+        ("Landslide", "Fleetwood Mac"), ("Better Together", "Jack Johnson"), ("Riptide", "Vance Joy"),
+        ("Stick Season", "Noah Kahan")
     ]),
     "rock": ("Stadium & Classic Rock Legends", "Timeless guitar riffs, soaring vocals & driving drums", [
         ("Bohemian Rhapsody", "Queen"), ("Dreams", "Fleetwood Mac"), ("Hotel California", "Eagles"),
-        ("Smells Like Teen Spirit", "Nirvana"), ("Mr. Brightside", "The Killers"), ("Everlong", "Foo Fighters")
+        ("Smells Like Teen Spirit", "Nirvana"), ("Mr. Brightside", "The Killers"), ("Everlong", "Foo Fighters"),
+        ("Sweet Child O' Mine", "Guns N' Roses"), ("Back In Black", "AC/DC"), ("Seven Nation Army", "The White Stripes"),
+        ("Under the Bridge", "Red Hot Chili Peppers")
     ]),
     "pop": ("Pop Supernova: Chart-Topping Hits", "Infectious hooks, glossy production & feel-good energy", [
         ("Blinding Lights", "The Weeknd"), ("Levitating", "Dua Lipa"), ("As It Was", "Harry Styles"),
-        ("Cruel Summer", "Taylor Swift"), ("Espresso", "Sabrina Carpenter"), ("Starboy", "The Weeknd")
+        ("Cruel Summer", "Taylor Swift"), ("Espresso", "Sabrina Carpenter"), ("Starboy", "The Weeknd"),
+        ("Don't Start Now", "Dua Lipa"), ("Uptown Funk", "Mark Ronson & Bruno Mars"), ("24K Magic", "Bruno Mars"),
+        ("Birds of a Feather", "Billie Eilish")
     ]),
     "jazz": ("Midnight Blue Note Jazz Lounge", "Smoky saxophone, walking upright bass & velvet trumpet", [
         ("Take Five", "The Dave Brubeck Quartet"), ("So What", "Miles Davis"), ("My Favorite Things", "John Coltrane"),
-        ("Fly Me to the Moon", "Frank Sinatra"), ("Autumn Leaves", "Cannonball Adderley"), ("Blue in Green", "Miles Davis")
+        ("Fly Me to the Moon", "Frank Sinatra"), ("Autumn Leaves", "Cannonball Adderley"), ("Blue in Green", "Miles Davis"),
+        ("Almost Blue", "Chet Baker"), ("What a Wonderful World", "Louis Armstrong"), ("The Girl From Ipanema", "Stan Getz & Joao Gilberto"),
+        ("Feeling Good", "Nina Simone")
     ]),
     "edm": ("Festival Mainstage & Electronic Euphoria", "Massive builds, euphoric synths & club-ready drops", [
         ("Levels", "Avicii"), ("Strobe", "deadmau5"), ("One More Time", "Daft Punk"),
-        ("Summer", "Calvin Harris"), ("Clarity", "Zedd"), ("Scary Monsters and Nice Sprites", "Skrillex")
+        ("Summer", "Calvin Harris"), ("Clarity", "Zedd"), ("Wake Me Up", "Avicii"),
+        ("Don't You Worry Child", "Swedish House Mafia"), ("Lean On", "Major Lazer & DJ Snake"), ("Latch", "Disclosure & Sam Smith"),
+        ("Innerbloom", "RUFUS DU SOL")
     ]),
     "r&b": ("Silk & Soul: R&B Slow Jams", "Lush harmonies, late-night basslines & timeless soul", [
         ("Snooze", "SZA"), ("No Scrubs", "TLC"), ("Adorn", "Miguel"),
-        ("Earned It", "The Weeknd"), ("Boo'd Up", "Ella Mai"), (" Kiss It Better", "Rihanna")
+        ("Earned It", "The Weeknd"), ("Boo'd Up", "Ella Mai"), ("Kiss It Better", "Rihanna"),
+        ("Pink + White", "Frank Ocean"), ("Redbone", "Childish Gambino"), ("Best Part", "Daniel Caesar"),
+        ("Die For You", "The Weeknd")
     ]),
     "throwback": ("80s & 90s Time Machine: Iconic Throwbacks", "Nostalgic sing-alongs, classic synths & timeless hooks", [
         ("Billie Jean", "Michael Jackson"), ("Take On Me", "a-ha"), ("Everybody Wants to Rule the World", "Tears for Fears"),
-        ("Africa", "Toto"), ("Sweet Dreams (Are Made of This)", "Eurythmics"), ("September", "Earth, Wind & Fire")
+        ("Africa", "Toto"), ("Sweet Dreams (Are Made of This)", "Eurythmics"), ("September", "Earth, Wind & Fire"),
+        ("I Wanna Dance with Somebody", "Whitney Houston"), ("Livin' on a Prayer", "Bon Jovi"), ("Return of the Mack", "Mark Morrison"),
+        ("Purple Rain", "Prince")
     ]),
     "melancholy": ("Late-Night Melancholy & Heartbreak Ballads", "Raw emotion, poignant piano chords & heartfelt vocals", [
         ("Someone Like You", "Adele"), ("Skinny Love", "Bon Iver"), ("Stay With Me", "Sam Smith"),
-        ("Motion Sickness", "Phoebe Bridgers"), ("Creep", "Radiohead"), ("when the party's over", "Billie Eilish")
+        ("Motion Sickness", "Phoebe Bridgers"), ("Creep", "Radiohead"), ("when the party's over", "Billie Eilish"),
+        ("traitor", "Olivia Rodrigo"), ("All I Want", "Kodaline"), ("The Scientist", "Coldplay"),
+        ("Glimpse of Us", "Joji")
     ]),
     "country": ("Modern & Classic Country Essentials", "Acoustic grit, heartfelt storytelling & southern harmonies", [
         ("Tennessee Whiskey", "Chris Stapleton"), ("Something in the Orange", "Zach Bryan"), ("Fast Car", "Luke Combs"),
-        ("Jolene", "Dolly Parton"), ("Ring of Fire", "Johnny Cash"), ("Slow Burn", "Kacey Musgraves")
+        ("Jolene", "Dolly Parton"), ("Ring of Fire", "Johnny Cash"), ("Slow Burn", "Kacey Musgraves"),
+        ("Whiskey Glasses", "Morgan Wallen"), ("Starting Over", "Chris Stapleton"), ("I Walk the Line", "Johnny Cash"),
+        ("Cover Me Up", "Jason Isbell")
     ]),
     "indie": ("Dreamy Indie Pop & Bedroom Grooves", "Jangle guitars, melancholic synths & hazy melodies", [
         ("Kyoto", "Phoebe Bridgers"), ("Sofia", "Clairo"), ("Not Strong Enough", "boygenius"),
-        ("Best Friend", "Rex Orange County"), ("Somebody Else", "The 1975"), ("Are You Bored Yet?", "Wallows")
+        ("Best Friend", "Rex Orange County"), ("Somebody Else", "The 1975"), ("Are You Bored Yet?", "Wallows"),
+        ("Show Me How", "Men I Trust"), ("San Luis", "Gregory Alan Isakov"), ("Seventeen", "Sharon Van Etten"),
+        ("Kilby Girl", "The Backseat Lovers")
     ]),
     "showcase": ("Genre & Mood Spotlight: Curated Essentials", "Hand-picked for pure musical groove, emotional depth & genre mastery", [
         ("Redbone", "Childish Gambino"), ("Midnight City", "M83"), ("Fast Car", "Tracy Chapman"),
-        ("Dreams", "Fleetwood Mac"), ("Money Trees", "Kendrick Lamar"), ("Space Song", "Beach House")
+        ("Dreams", "Fleetwood Mac"), ("Money Trees", "Kendrick Lamar"), ("Space Song", "Beach House"),
+        ("Pink + White", "Frank Ocean"), ("Take Five", "The Dave Brubeck Quartet"), ("Levitating", "Dua Lipa"),
+        ("Skinny Love", "Bon Iver")
     ]),
 }
 
 ARTIST_SIMILAR_PRESETS = {
     "fleetwood mac": ("Songs Like Fleetwood Mac: 70s Melodic Rock", "Warm analog guitars & timeless California harmonies", [
         ("Dreams", "Fleetwood Mac"), ("Hotel California", "Eagles"), ("Edge of Seventeen", "Stevie Nicks"),
-        ("Go Your Own Way", "Fleetwood Mac"), ("Free Fallin'", "Tom Petty"), ("It's Too Late", "Carole King")
+        ("Go Your Own Way", "Fleetwood Mac"), ("Free Fallin'", "Tom Petty"), ("It's Too Late", "Carole King"),
+        ("Landslide", "Fleetwood Mac"), ("Take It Easy", "Eagles"), (" Rhiannon", "Fleetwood Mac"),
+        ("Ventura Highway", "America")
     ]),
     "the weeknd": ("Songs Like The Weeknd: Dark R&B & Synthpop", "Moody 808s, cinematic synthesizers & seductive hooks", [
         ("Blinding Lights", "The Weeknd"), ("Starboy", "The Weeknd"), ("Redbone", "Childish Gambino"),
-        ("One More Time", "Daft Punk"), ("Snooze", "SZA"), ("Midnight City", "M83")
+        ("One More Time", "Daft Punk"), ("Snooze", "SZA"), ("Midnight City", "M83"),
+        ("Save Your Tears", "The Weeknd"), ("Pink + White", "Frank Ocean"), ("Die For You", "The Weeknd"),
+        ("Nightcall", "Kavinsky")
     ]),
     "taylor swift": ("Songs Like Taylor Swift: Emotional Pop & Storytelling", "Poignant songwriting, soaring hooks & indie-pop warmth", [
         ("Cruel Summer", "Taylor Swift"), ("drivers license", "Olivia Rodrigo"), ("Motion Sickness", "Phoebe Bridgers"),
-        ("Fast Car", "Tracy Chapman"), ("Slow Burn", "Kacey Musgraves"), ("Green Light", "Lorde")
+        ("Fast Car", "Tracy Chapman"), ("Slow Burn", "Kacey Musgraves"), ("Green Light", "Lorde"),
+        ("traitor", "Olivia Rodrigo"), ("Kyoto", "Phoebe Bridgers"), ("Espresso", "Sabrina Carpenter"),
+        ("Birds of a Feather", "Billie Eilish")
     ]),
     "kendrick lamar": ("Songs Like Kendrick Lamar: Conscious Hip-Hop", "Razor-sharp lyricism, jazzy boom-bap & hard-hitting 808s", [
         ("HUMBLE.", "Kendrick Lamar"), ("Money Trees", "Kendrick Lamar"), ("N.Y. State of Mind", "Nas"),
-        ("No Role Modelz", "J. Cole"), ("C.R.E.A.M.", "Wu-Tang Clan"), ("Shook Ones, Pt. II", "Mobb Deep")
+        ("No Role Modelz", "J. Cole"), ("C.R.E.A.M.", "Wu-Tang Clan"), ("Shook Ones, Pt. II", "Mobb Deep"),
+        ("DNA.", "Kendrick Lamar"), ("Juicy", "The Notorious B.I.G."), ("Ms. Jackson", "OutKast"),
+        ("Flashing Lights", "Kanye West")
     ]),
     "radiohead": ("Songs Like Radiohead: Atmospheric Alt-Rock", "Hypnotic arpeggios, haunting falsettos & experimental tension", [
         ("Creep", "Radiohead"), ("Skinny Love", "Bon Iver"), ("Teardrop", "Massive Attack"),
-        ("Space Song", "Beach House"), ("The Scientist", "Coldplay"), ("Breezeblocks", "alt-J")
+        ("Space Song", "Beach House"), ("The Scientist", "Coldplay"), ("Breezeblocks", "alt-J"),
+        ("Karma Police", "Radiohead"), ("Everlong", "Foo Fighters"), ("Smells Like Teen Spirit", "Nirvana"),
+        ("Chamber Of Reflection", "Mac DeMarco")
     ]),
     "bon iver": ("Songs Like Bon Iver: Ethereal Indie Folk", "Intimate acoustics, layered falsetto harmonies & cabin warmth", [
         ("Skinny Love", "Bon Iver"), ("Fast Car", "Tracy Chapman"), ("San Luis", "Gregory Alan Isakov"),
-        ("Chicago", "Sufjan Stevens"), ("Motion Sickness", "Phoebe Bridgers"), ("White Winter Hymnal", "Fleet Foxes")
+        ("Chicago", "Sufjan Stevens"), ("Motion Sickness", "Phoebe Bridgers"), ("White Winter Hymnal", "Fleet Foxes"),
+        ("Holocene", "Bon Iver"), ("Stick Season", "Noah Kahan"), ("Ho Hey", "The Lumineers"),
+        ("Landslide", "Fleetwood Mac")
     ]),
     "tame impala": ("Songs Like Tame Impala: Psych-Pop & Groove", "Wobbly phasers, infectious basslines & dreamy sonic textures", [
         ("The Less I Know the Better", "Tame Impala"), ("Electric Feel", "MGMT"), ("Chamber Of Reflection", "Mac DeMarco"),
-        ("Space Song", "Beach House"), ("Redbone", "Childish Gambino"), ("Midnight City", "M83")
+        ("Space Song", "Beach House"), ("Redbone", "Childish Gambino"), ("Midnight City", "M83"),
+        ("Let It Happen", "Tame Impala"), ("Get Lucky", "Daft Punk"), ("Show Me How", "Men I Trust"),
+        ("Heat Waves", "Glass Animals")
     ]),
     "daft punk": ("Songs Like Daft Punk: French Touch & Electronic Funk", "Talkbox grooves, infectious disco bass & robotic euphoria", [
         ("Get Lucky", "Daft Punk"), ("One More Time", "Daft Punk"), ("Midnight City", "M83"),
-        ("Nightcall", "Kavinsky"), ("Levels", "Avicii"), ("Latch", "Disclosure & Sam Smith")
+        ("Nightcall", "Kavinsky"), ("Levels", "Avicii"), ("Latch", "Disclosure & Sam Smith"),
+        ("Instant Crush", "Daft Punk"), ("Strobe", "deadmau5"), ("Innerbloom", "RUFUS DU SOL"),
+        ("Starboy", "The Weeknd")
     ])
 }
 
@@ -2214,7 +2262,7 @@ def format_itunes_item(item, index=1):
 _ITUNES_TRACK_CACHE = {}
 _VIBE_ROTATION_IDX = [0]
 
-def search_deezer_fallback(query, limit=6):
+def search_deezer_fallback(query, limit=10):
     """Fallback search using Deezer API to ensure 100% reliable 30s playable MP3 previews."""
     try:
         d_res = requests.get(
@@ -2320,7 +2368,7 @@ def enrich_single_track(title, artist="", index=1, timeout_sec=1.8):
         "youtube_music_url": st["youtube_music"]
     }
 
-def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
+def enrich_track_list_fast(track_tuples, max_total_seconds=2.8):
     """Enriches a list of (title, artist) pairs with a strict time budget so requests never stall."""
     started = time.time()
     enriched = []
@@ -2356,7 +2404,7 @@ def enrich_track_list_fast(track_tuples, max_total_seconds=2.2):
                 })
     return enriched
 
-def search_itunes_multiple(term, limit=6):
+def search_itunes_multiple(term, limit=10):
     try:
         resp = requests.get(
             "https://itunes.apple.com/search",
@@ -2593,7 +2641,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
     if active_tracks:
         formatted_active = "; ".join(
             f"#{i+1}: '{t.get('title')}' by {t.get('artist')} (Album: {t.get('album', 'Single')}, Year: {t.get('year', 'N/A')}, Duration: {t.get('duration', '3:30')})"
-            for i, t in enumerate(active_tracks[:6])
+            for i, t in enumerate(active_tracks[:10])
         )
         current_tracks_context = f"\nCurrently displayed playlist tracks in the chat: {formatted_active}\n"
 
@@ -2614,12 +2662,12 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         "}\n"
         "Rules:\n"
         "- Do NOT provide a playlist or song tracks for normal conversation! If the user says hello, asks how you are, talks about their day, shares feelings, asks questions, or chats about life, set mode='chat' and tracks=[].\n"
-        "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, suggest, recommend, or play a playlist or mix of songs.\n"
+        "- Only return tracks (10 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, suggest, recommend, or play a playlist or mix of songs.\n"
         "- If the user asks for a single song or ringtone, set mode='single' or 'ringtone' and return 1 track.\n"
         "- PLAYLIST & SONG SUGGESTION RULES:\n"
         "  * When suggesting songs or curating a playlist based on a user's prompt (mood, activity, theme, genre, or vibe): ALWAYS suggest songs based upon the musical genre and mood, NOT literal text matching.\n"
         "  * NOT all suggested songs need to have the requested text or search keywords in the playlist or track title! In fact, most songs should simply embody that musical feeling, genre, tempo, and emotion (e.g., for a 'rainy day' playlist, do NOT just pick songs with 'Rain' or 'Rainy' in the title; select tracks that musically evoke that mood like Bon Iver, Radiohead, Norah Jones, Phoebe Bridgers; for 'workout', choose high-energy tracks with driving BPMs across hip-hop, electronic, or rock—not songs with 'workout' in the title; for 'heartbreak' or 'sad', choose emotionally poignant ballads by Adele, Sam Smith, SZA, or Lewis Capaldi—not songs containing 'heartbreak'; for 'focus' or 'study', choose warm lo-fi beats or ambient textures).\n"
-        "  * Curate 6 diverse, authentic, real tracks by renowned artists that fit together cohesively as a playlist.\n"
+        "  * Curate 10 diverse, authentic, real tracks by renowned artists that fit together cohesively as a playlist.\n"
         "- Output ONLY valid JSON."
     )
     messages_payload = [{"role": "system", "content": sys_prompt}]
@@ -2657,8 +2705,8 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 "tracks": []
             }
         if raw_tracks:
-            tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:8]]
-            enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=2.0)
+            tuples = [(t.get("title", ""), t.get("artist", "")) for t in raw_tracks[:10]]
+            enriched_tracks = enrich_track_list_fast(tuples, max_total_seconds=2.8)
             return {
                 "success": True,
                 "reply": parsed.get("reply") or "Here are the tracks I hand-picked for you! Tap play to listen right in our chat or grab the MP3s below.",
@@ -2690,7 +2738,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
         # B. Common check-ins, capabilities, jokes, and trivia
         elif any(q in msg_lower for q in ["who are you", "what can you do", "help", "how do you work", "what are your features"]):
-            reply_text = "I'm your **AI Personal Assistant & Music DJ** on MP3aud.io! 🎧 I can answer questions, chat with you about life and music, curate 6-track playlists for any mood, or extract 320kbps MP3s and ringtones.\n\nWhat's on your mind or what would you like to listen to?"
+            reply_text = "I'm your **AI Personal Assistant & Music DJ** on MP3aud.io! 🎧 I can answer questions, chat with you about life and music, curate 10-track playlists for any mood, or extract 320kbps MP3s and ringtones.\n\nWhat's on your mind or what would you like to listen to?"
         elif any(q in msg_lower for q in ["how are you", "how's it going", "hows it going", "how do you do", "what's up", "whats up"]):
             reply_text = "I'm doing great, thanks for asking! 🎧 Just hanging out in the studio listening to some records. How is your day going so far?"
         elif any(q in msg_lower for q in ["joke", "funny", "laugh"]):
@@ -2718,7 +2766,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                                     sum_data = sum_resp.json()
                                     extract = sum_data.get("extract")
                                     if extract and len(extract) > 40:
-                                        reply_text = f"**{top_title}**\n\n{extract[:450]}...\n\nWant to chat more about this, or should I curate a 6-track mix to listen to while we talk?"
+                                        reply_text = f"**{top_title}**\n\n{extract[:450]}...\n\nWant to chat more about this, or should I curate a 10-track mix to listen to while we talk?"
                 except Exception as e:
                     logger.warning(f"Wikipedia search fallback error: {e}")
 
@@ -2751,12 +2799,12 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         # Check artist similarity first (e.g. "songs like Fleetwood Mac")
         for art_key, (sim_title, sim_vibe, sim_seeds) in ARTIST_SIMILAR_PRESETS.items():
             if art_key in msg_lower and re.search(r'\b(like|similar|style of|vibe of|around)\b', msg_lower):
-                enriched_tracks = enrich_track_list_fast(sim_seeds, max_total_seconds=1.8)
+                enriched_tracks = enrich_track_list_fast(sim_seeds[:10], max_total_seconds=2.6)
                 for t in enriched_tracks:
                     attach_streaming_links_to_track(t)
                 return {
                     "success": True,
-                    "reply": f"Great taste! 🎧 Here are **6 standout tracks** that capture the musical aesthetic, songwriting, and genre of **{art_key.title()}**:",
+                    "reply": f"Great taste! 🎧 Here are **10 standout tracks** that capture the musical aesthetic, songwriting, and genre of **{art_key.title()}**:",
                     "mode": "playlist",
                     "playlist_title": sim_title,
                     "playlist_vibe": sim_vibe,
@@ -2768,14 +2816,14 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         matched_vibe = detect_genre_and_mood(msg_lower)
         if matched_vibe and matched_vibe in VIBE_PRESET_QUERIES:
             p_title, p_vibe, seed_list = VIBE_PRESET_QUERIES[matched_vibe]
-            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+            enriched_tracks = enrich_track_list_fast(seed_list[:10], max_total_seconds=2.6)
             for t in enriched_tracks:
                 attach_streaming_links_to_track(t)
             reply_intro = (
                 "You got it! 🎧 Great playlists are built on mood, tempo, and genre—not just matching words in song titles. "
-                "Here is a curated 6-track lineup selected purely for musical feel, blending soulful R&B, late-night synthwave, warm acoustic, and indie grooves:"
+                "Here is a curated 10-track lineup selected purely for musical feel, blending soulful R&B, late-night synthwave, warm acoustic, and indie grooves:"
                 if matched_vibe == 'showcase'
-                else f"Here is your **{p_title}**! Curated by genre and mood with 6 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream."
+                else f"Here is your **{p_title}**! Curated by genre and mood with 10 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream."
             )
             return {
                 "success": True,
@@ -2789,7 +2837,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
         for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
             if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
-                enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+                enriched_tracks = enrich_track_list_fast(seed_list[:10], max_total_seconds=2.6)
                 for t in enriched_tracks:
                     attach_streaming_links_to_track(t)
                 return {
@@ -2830,7 +2878,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         chosen_idx = _VIBE_ROTATION_IDX[0] % len(vibe_items)
         _VIBE_ROTATION_IDX[0] += 1
         _, (p_title, p_vibe, seed_list) = vibe_items[chosen_idx]
-        enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+        enriched_tracks = enrich_track_list_fast(seed_list[:10], max_total_seconds=2.6)
         for t in enriched_tracks:
             attach_streaming_links_to_track(t)
         return {
@@ -2850,12 +2898,12 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         clean_vibe = detect_genre_and_mood(cleaned_query.lower())
         if clean_vibe and clean_vibe in VIBE_PRESET_QUERIES:
             p_title, p_vibe, seed_list = VIBE_PRESET_QUERIES[clean_vibe]
-            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+            enriched_tracks = enrich_track_list_fast(seed_list[:10], max_total_seconds=2.6)
             for t in enriched_tracks:
                 attach_streaming_links_to_track(t)
             return {
                 "success": True,
-                "reply": f"Here is your **{p_title}**! Curated by genre and mood with 6 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
+                "reply": f"Here is your **{p_title}**! Curated by genre and mood with 10 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
                 "mode": "playlist",
                 "playlist_title": p_title,
                 "playlist_vibe": p_vibe,
@@ -2863,7 +2911,7 @@ def curate_music_response(user_message, history=None, options=None, current_trac
                 "streaming_links": make_streaming_links_for_query(p_title)
             }
 
-    search_limit = 6 if wants_playlist else 1
+    search_limit = 10 if wants_playlist else 1
     tracks = search_itunes_multiple(cleaned_query, limit=search_limit)
 
     if not tracks:
@@ -3334,7 +3382,7 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         with app.app_context():
             valid_entries = [
                 (idx + 1, t.get('search_query', f"ytsearch1:{t['artist']} - {t['title']} audio"), t['title'], t['artist'], t.get('artwork_url', ''))
-                for idx, t in enumerate(tracks[:6])
+                for idx, t in enumerate(tracks[:10])
             ]
             if valid_entries:
                 job = ConversionJob(
@@ -3357,7 +3405,7 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
 
         track_lines = "\n".join([
             f"{t['index']}. <b>{_tg_esc(t['title'])}</b> — {_tg_esc(t['artist'])} ({_tg_esc(t['duration'])})"
-            for t in tracks[:6]
+            for t in tracks[:10]
         ])
         summary_html = (
             f"🎵 <b>{_tg_esc(playlist_title)}</b>\n"
@@ -3405,7 +3453,7 @@ def handle_telegram_message_async(chat_id, text_msg, bot_token, business_connect
         }, timeout=10)
 
         # Send direct playable audio bubbles in Telegram for each track
-        for t in tracks[:6]:
+        for t in tracks[:10]:
             try:
                 send_telegram_audio_track(api_base, chat_id, t, biz_params)
             except Exception as audio_err:
@@ -3511,7 +3559,7 @@ def whatsapp_webhook():
         session_id = str(uuid.uuid4())
         valid_entries = [
             (idx + 1, t.get('search_query', f"ytsearch1:{t['artist']} - {t['title']} audio"), t['title'], t['artist'], t.get('artwork_url', ''))
-            for idx, t in enumerate(tracks[:6])
+            for idx, t in enumerate(tracks[:10])
         ]
         if valid_entries:
             job = ConversionJob(
@@ -3537,7 +3585,7 @@ def whatsapp_webhook():
         sp_link = f"https://open.spotify.com/search/{enc_query}"
         yt_link = f"https://music.youtube.com/search?q={enc_query}"
 
-        track_lines = "\n".join([f"{t['index']}. {t['title']} - {t['artist']}" for t in tracks[:5]])
+        track_lines = "\n".join([f"{t['index']}. {t['title']} - {t['artist']}" for t in tracks[:10]])
         body_text = (
             f"🎧 {playlist_title}\n\n"
             f"{track_lines}\n\n"
