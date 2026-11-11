@@ -2054,7 +2054,98 @@ VIBE_PRESET_QUERIES = {
         ("Snooze", "SZA"), ("No Scrubs", "TLC"), ("Adorn", "Miguel"),
         ("Earned It", "The Weeknd"), ("Boo'd Up", "Ella Mai"), (" Kiss It Better", "Rihanna")
     ]),
+    "throwback": ("80s & 90s Time Machine: Iconic Throwbacks", "Nostalgic sing-alongs, classic synths & timeless hooks", [
+        ("Billie Jean", "Michael Jackson"), ("Take On Me", "a-ha"), ("Everybody Wants to Rule the World", "Tears for Fears"),
+        ("Africa", "Toto"), ("Sweet Dreams (Are Made of This)", "Eurythmics"), ("September", "Earth, Wind & Fire")
+    ]),
+    "melancholy": ("Late-Night Melancholy & Heartbreak Ballads", "Raw emotion, poignant piano chords & heartfelt vocals", [
+        ("Someone Like You", "Adele"), ("Skinny Love", "Bon Iver"), ("Stay With Me", "Sam Smith"),
+        ("Motion Sickness", "Phoebe Bridgers"), ("Creep", "Radiohead"), ("when the party's over", "Billie Eilish")
+    ]),
+    "country": ("Modern & Classic Country Essentials", "Acoustic grit, heartfelt storytelling & southern harmonies", [
+        ("Tennessee Whiskey", "Chris Stapleton"), ("Something in the Orange", "Zach Bryan"), ("Fast Car", "Luke Combs"),
+        ("Jolene", "Dolly Parton"), ("Ring of Fire", "Johnny Cash"), ("Slow Burn", "Kacey Musgraves")
+    ]),
+    "indie": ("Dreamy Indie Pop & Bedroom Grooves", "Jangle guitars, melancholic synths & hazy melodies", [
+        ("Kyoto", "Phoebe Bridgers"), ("Sofia", "Clairo"), ("Not Strong Enough", "boygenius"),
+        ("Best Friend", "Rex Orange County"), ("Somebody Else", "The 1975"), ("Are You Bored Yet?", "Wallows")
+    ]),
+    "showcase": ("Genre & Mood Spotlight: Curated Essentials", "Hand-picked for pure musical groove, emotional depth & genre mastery", [
+        ("Redbone", "Childish Gambino"), ("Midnight City", "M83"), ("Fast Car", "Tracy Chapman"),
+        ("Dreams", "Fleetwood Mac"), ("Money Trees", "Kendrick Lamar"), ("Space Song", "Beach House")
+    ]),
 }
+
+ARTIST_SIMILAR_PRESETS = {
+    "fleetwood mac": ("Songs Like Fleetwood Mac: 70s Melodic Rock", "Warm analog guitars & timeless California harmonies", [
+        ("Dreams", "Fleetwood Mac"), ("Hotel California", "Eagles"), ("Edge of Seventeen", "Stevie Nicks"),
+        ("Go Your Own Way", "Fleetwood Mac"), ("Free Fallin'", "Tom Petty"), ("It's Too Late", "Carole King")
+    ]),
+    "the weeknd": ("Songs Like The Weeknd: Dark R&B & Synthpop", "Moody 808s, cinematic synthesizers & seductive hooks", [
+        ("Blinding Lights", "The Weeknd"), ("Starboy", "The Weeknd"), ("Redbone", "Childish Gambino"),
+        ("One More Time", "Daft Punk"), ("Snooze", "SZA"), ("Midnight City", "M83")
+    ]),
+    "taylor swift": ("Songs Like Taylor Swift: Emotional Pop & Storytelling", "Poignant songwriting, soaring hooks & indie-pop warmth", [
+        ("Cruel Summer", "Taylor Swift"), ("drivers license", "Olivia Rodrigo"), ("Motion Sickness", "Phoebe Bridgers"),
+        ("Fast Car", "Tracy Chapman"), ("Slow Burn", "Kacey Musgraves"), ("Green Light", "Lorde")
+    ]),
+    "kendrick lamar": ("Songs Like Kendrick Lamar: Conscious Hip-Hop", "Razor-sharp lyricism, jazzy boom-bap & hard-hitting 808s", [
+        ("HUMBLE.", "Kendrick Lamar"), ("Money Trees", "Kendrick Lamar"), ("N.Y. State of Mind", "Nas"),
+        ("No Role Modelz", "J. Cole"), ("C.R.E.A.M.", "Wu-Tang Clan"), ("Shook Ones, Pt. II", "Mobb Deep")
+    ]),
+    "radiohead": ("Songs Like Radiohead: Atmospheric Alt-Rock", "Hypnotic arpeggios, haunting falsettos & experimental tension", [
+        ("Creep", "Radiohead"), ("Skinny Love", "Bon Iver"), ("Teardrop", "Massive Attack"),
+        ("Space Song", "Beach House"), ("The Scientist", "Coldplay"), ("Breezeblocks", "alt-J")
+    ]),
+    "bon iver": ("Songs Like Bon Iver: Ethereal Indie Folk", "Intimate acoustics, layered falsetto harmonies & cabin warmth", [
+        ("Skinny Love", "Bon Iver"), ("Fast Car", "Tracy Chapman"), ("San Luis", "Gregory Alan Isakov"),
+        ("Chicago", "Sufjan Stevens"), ("Motion Sickness", "Phoebe Bridgers"), ("White Winter Hymnal", "Fleet Foxes")
+    ]),
+    "tame impala": ("Songs Like Tame Impala: Psych-Pop & Groove", "Wobbly phasers, infectious basslines & dreamy sonic textures", [
+        ("The Less I Know the Better", "Tame Impala"), ("Electric Feel", "MGMT"), ("Chamber Of Reflection", "Mac DeMarco"),
+        ("Space Song", "Beach House"), ("Redbone", "Childish Gambino"), ("Midnight City", "M83")
+    ]),
+    "daft punk": ("Songs Like Daft Punk: French Touch & Electronic Funk", "Talkbox grooves, infectious disco bass & robotic euphoria", [
+        ("Get Lucky", "Daft Punk"), ("One More Time", "Daft Punk"), ("Midnight City", "M83"),
+        ("Nightcall", "Kavinsky"), ("Levels", "Avicii"), ("Latch", "Disclosure & Sam Smith")
+    ])
+}
+
+def detect_genre_and_mood(lower):
+    """Identifies the intended musical genre or mood from user input without relying on literal text matching."""
+    if re.search(r'\b(genre\s+and\s+mood|genre\s*&\s*mood|mood\s+and\s+genre|mood\s*&\s*genre|based\s+(up)?on\s+genre|based\s+(up)?on\s+mood|cross\s*genre|eclectic|diverse\s+(mix|playlist|songs))\b', lower):
+        return 'showcase'
+    if re.search(r'\b(sad|melancholy|heartbreak|breakup|crying|depressed|grief|lonely|gloomy|somber|hurting|broken heart|rainy|raining|in my feelings|tears)\b', lower):
+        return 'melancholy'
+    if re.search(r'\b(country|americana|southern|bluegrass|nashville|western|folk rock|honky tonk)\b', lower):
+        return 'country'
+    if re.search(r'\b(indie|indie pop|dream pop|shoegaze|bedroom pop|indie rock)\b', lower):
+        return 'indie'
+    if re.search(r'\b(synthwave|retrowave|outrun|cyberpunk|neon|night drive|midnight drive|highway night)\b', lower):
+        return 'synthwave'
+    if re.search(r'\b(workout|gym|fitness|cardio|lift|running|run|hype|pump up|energetic|beast mode|motivation|motivated|high energy|intense)\b', lower):
+        return 'workout'
+    if re.search(r'\b(hip hop|hip-hop|rap|boom bap|trap|90s rap|freestyle|hiphop|bars|beats)\b', lower):
+        return 'hip hop'
+    if re.search(r'\b(lofi|lo-fi|study|studying|homework|focus|coding|programming|reading|concentrate|deep work|desk lamp|chillhop)\b', lower):
+        return 'lofi'
+    if re.search(r'\b(acoustic|coffeehouse|folk|unplugged|campfire|mellow guitar|fingerpicking|singer songwriter|singer-songwriter|morning coffee|sunday morning)\b', lower):
+        return 'acoustic'
+    if re.search(r'\b(rock|metal|heavy metal|grunge|alternative rock|classic rock|hard rock|punk)\b', lower):
+        return 'rock'
+    if re.search(r'\b(jazz|saxophone|swing|bossa|bossa nova|lounge|blues|dinner party|wine|cocktail)\b', lower):
+        return 'jazz'
+    if re.search(r'\b(r&b|rnb|soul|slow jam|slow jams|neo soul|romantic|date night|sensual|silk)\b', lower):
+        return 'r&b'
+    if re.search(r'\b(edm|electronic|house|techno|club|festival|dance|rave|euphoria|banger)\b', lower):
+        return 'edm'
+    if re.search(r'\b(80s|90s|throwback|retro|old school|classic hits|nostalgia|golden oldies|cassette)\b', lower):
+        return 'throwback'
+    if re.search(r'\b(pop|chart|party|upbeat|feel good|happy|summer|sunny|celebrat|friday|weekend|joy|cheerful)\b', lower):
+        return 'pop'
+    if re.search(r'\b(chill|late night|late-night|relax|relaxing|vibe|sunset|ambient|unwind|decompress|calm|peaceful|zen|mellow|sleep|bedtime)\b', lower):
+        return 'chill'
+    return None
 
 def format_duration_ms(ms):
     if not ms or not isinstance(ms, (int, float)):
@@ -2479,11 +2570,11 @@ def curate_music_response(user_message, history=None, options=None, current_trac
     # 2. Determine whether the user SPECIFICALLY asked for a playlist or a single track
     wants_playlist = bool(
         re.search(r'\b(playlist|playlists|mix|mixtape|tracklist|setlist|curate|volume\s*2|vol\.?\s*2)\b', msg_lower)
-        or re.search(r'\b(play|send|give|make|build|create|drop|put on|line up|queue|show|find|get)\b.*\b(songs|tracks|beats|music|anthems|hits|classics|jams)\b', msg_lower)
+        or re.search(r'\b(play|send|give|make|build|create|drop|put on|line up|queue|show|find|get|suggest|recommend|curate|pick)\b.*\b(songs|tracks|beats|music|anthems|hits|classics|jams|playlist)\b', msg_lower)
         or re.search(r'^(top|best)\s+\d*\s*\w+', msg_lower)
-        or re.search(r'\b(songs|tracks)\s+(by|like|from|for)\s+', msg_lower)
-        or re.search(r'^(send|make|build|create|curate|give)\s+me\s+(a|an|some)\s+', msg_lower)
-        or re.search(r'\b(make it more upbeat|more upbeat|make it chiller|more chill|dial it back|keep this vibe going|surprise me)\b', msg_lower)
+        or re.search(r'\b(songs|tracks)\s+(by|like|from|for|based\s+(up)?on)\s+', msg_lower)
+        or re.search(r'^(send|make|build|create|curate|give|suggest|recommend)\s+me\s+(a|an|some)\s+', msg_lower)
+        or re.search(r'\b(make it more upbeat|more upbeat|make it chiller|more chill|dial it back|keep this vibe going|surprise me|genre and mood|genre\s*&\s*mood|mood and genre|mood\s*&\s*genre|based\s+(up)?on\s+genre|based\s+(up)?on\s+mood)\b', msg_lower)
     )
     wants_single_track = bool(
         is_ringtone_req
@@ -2523,8 +2614,12 @@ def curate_music_response(user_message, history=None, options=None, current_trac
         "}\n"
         "Rules:\n"
         "- Do NOT provide a playlist or song tracks for normal conversation! If the user says hello, asks how you are, talks about their day, shares feelings, asks questions, or chats about life, set mode='chat' and tracks=[].\n"
-        "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, or play a playlist or mix of songs.\n"
+        "- Only return tracks (6 tracks, mode='playlist') when the user SPECIFICALLY asks to make, build, create, suggest, recommend, or play a playlist or mix of songs.\n"
         "- If the user asks for a single song or ringtone, set mode='single' or 'ringtone' and return 1 track.\n"
+        "- PLAYLIST & SONG SUGGESTION RULES:\n"
+        "  * When suggesting songs or curating a playlist based on a user's prompt (mood, activity, theme, genre, or vibe): ALWAYS suggest songs based upon the musical genre and mood, NOT literal text matching.\n"
+        "  * NOT all suggested songs need to have the requested text or search keywords in the playlist or track title! In fact, most songs should simply embody that musical feeling, genre, tempo, and emotion (e.g., for a 'rainy day' playlist, do NOT just pick songs with 'Rain' or 'Rainy' in the title; select tracks that musically evoke that mood like Bon Iver, Radiohead, Norah Jones, Phoebe Bridgers; for 'workout', choose high-energy tracks with driving BPMs across hip-hop, electronic, or rock—not songs with 'workout' in the title; for 'heartbreak' or 'sad', choose emotionally poignant ballads by Adele, Sam Smith, SZA, or Lewis Capaldi—not songs containing 'heartbreak'; for 'focus' or 'study', choose warm lo-fi beats or ambient textures).\n"
+        "  * Curate 6 diverse, authentic, real tracks by renowned artists that fit together cohesively as a playlist.\n"
         "- Output ONLY valid JSON."
     )
     messages_payload = [{"role": "system", "content": sys_prompt}]
@@ -2653,16 +2748,58 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     # 4. Smart Natural Language Playlist/Track Curation (when explicitly requested!)
     if wants_playlist:
+        # Check artist similarity first (e.g. "songs like Fleetwood Mac")
+        for art_key, (sim_title, sim_vibe, sim_seeds) in ARTIST_SIMILAR_PRESETS.items():
+            if art_key in msg_lower and re.search(r'\b(like|similar|style of|vibe of|around)\b', msg_lower):
+                enriched_tracks = enrich_track_list_fast(sim_seeds, max_total_seconds=1.8)
+                for t in enriched_tracks:
+                    attach_streaming_links_to_track(t)
+                return {
+                    "success": True,
+                    "reply": f"Great taste! 🎧 Here are **6 standout tracks** that capture the musical aesthetic, songwriting, and genre of **{art_key.title()}**:",
+                    "mode": "playlist",
+                    "playlist_title": sim_title,
+                    "playlist_vibe": sim_vibe,
+                    "tracks": enriched_tracks,
+                    "streaming_links": make_streaming_links_for_query(sim_title)
+                }
+
+        # Check genre and mood detection (never rely on literal keyword title matching)
+        matched_vibe = detect_genre_and_mood(msg_lower)
+        if matched_vibe and matched_vibe in VIBE_PRESET_QUERIES:
+            p_title, p_vibe, seed_list = VIBE_PRESET_QUERIES[matched_vibe]
+            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+            for t in enriched_tracks:
+                attach_streaming_links_to_track(t)
+            reply_intro = (
+                "You got it! 🎧 Great playlists are built on mood, tempo, and genre—not just matching words in song titles. "
+                "Here is a curated 6-track lineup selected purely for musical feel, blending soulful R&B, late-night synthwave, warm acoustic, and indie grooves:"
+                if matched_vibe == 'showcase'
+                else f"Here is your **{p_title}**! Curated by genre and mood with 6 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream."
+            )
+            return {
+                "success": True,
+                "reply": reply_intro,
+                "mode": "playlist",
+                "playlist_title": p_title,
+                "playlist_vibe": p_vibe,
+                "tracks": enriched_tracks,
+                "streaming_links": make_streaming_links_for_query(p_title)
+            }
+
         for vibe_key, (p_title, p_vibe, seed_list) in VIBE_PRESET_QUERIES.items():
             if vibe_key in msg_lower or (vibe_key == "lofi" and "lo-fi" in msg_lower):
                 enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+                for t in enriched_tracks:
+                    attach_streaming_links_to_track(t)
                 return {
                     "success": True,
                     "reply": f"Here is your **{p_title}**! Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
                     "mode": "playlist",
                     "playlist_title": p_title,
                     "playlist_vibe": p_vibe,
-                    "tracks": enriched_tracks
+                    "tracks": enriched_tracks,
+                    "streaming_links": make_streaming_links_for_query(p_title)
                 }
 
     # Clean conversational filler words to extract the core artist / song / genre query
@@ -2708,6 +2845,23 @@ def curate_music_response(user_message, history=None, options=None, current_trac
 
     if not cleaned_query:
         cleaned_query = msg
+
+    if wants_playlist and not is_ringtone_req:
+        clean_vibe = detect_genre_and_mood(cleaned_query.lower())
+        if clean_vibe and clean_vibe in VIBE_PRESET_QUERIES:
+            p_title, p_vibe, seed_list = VIBE_PRESET_QUERIES[clean_vibe]
+            enriched_tracks = enrich_track_list_fast(seed_list, max_total_seconds=1.8)
+            for t in enriched_tracks:
+                attach_streaming_links_to_track(t)
+            return {
+                "success": True,
+                "reply": f"Here is your **{p_title}**! Curated by genre and mood with 6 authentic records. Tap play on any audio bubble to listen right here in the chat, or tap Apple Music, Spotify, or YouTube Music to stream.",
+                "mode": "playlist",
+                "playlist_title": p_title,
+                "playlist_vibe": p_vibe,
+                "tracks": enriched_tracks,
+                "streaming_links": make_streaming_links_for_query(p_title)
+            }
 
     search_limit = 6 if wants_playlist else 1
     tracks = search_itunes_multiple(cleaned_query, limit=search_limit)
