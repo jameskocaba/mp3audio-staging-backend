@@ -3020,6 +3020,38 @@ def assistant_prepare_download():
     }), 410
 
 
+@app.route('/api/ringtone/create', methods=['POST'])
+def create_ringtone():
+    user = get_or_create_user()
+    data = request.json or {}
+    title = data.get('title', 'Custom Ringtone')
+    artist = data.get('artist', 'Artist')
+    preview_url = data.get('preview_url', '')
+
+    credits = getattr(user, 'paid_track_credits', 0) or 0
+    has_sub = getattr(user, 'subscription_active', False)
+
+    if credits < 1 and not has_sub:
+        return jsonify({
+            "success": False,
+            "requires_payment": True,
+            "error": "Creating custom phone ringtones requires 1 credit per track. Top up with 350 credits ($3.99) to unlock!"
+        }), 402
+
+    if not has_sub:
+        user.paid_track_credits = max(0, credits - 1)
+        db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "credits_remaining": user.paid_track_credits,
+        "title": title,
+        "artist": artist,
+        "preview_url": preview_url,
+        "message": f"Ringtone generated for {title}"
+    }), 200
+
+
 @app.route('/download_mp3/<session_id>', methods=['GET'])
 def download_single_mp3(session_id):
     return jsonify({
