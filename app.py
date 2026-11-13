@@ -3031,15 +3031,15 @@ def create_ringtone():
     credits = getattr(user, 'paid_track_credits', 0) or 0
     has_sub = getattr(user, 'subscription_active', False)
 
-    if credits < 1 and not has_sub:
+    if credits < 125 and not has_sub:
         return jsonify({
             "success": False,
             "requires_payment": True,
-            "error": "Creating custom phone ringtones requires 1 credit per track. Top up with 350 credits ($3.99) to unlock!"
+            "error": "Creating custom phone ringtones requires 125 credits per download. Top up with 350 credits ($3.99) to unlock!"
         }), 402
 
     if not has_sub:
-        user.paid_track_credits = max(0, credits - 1)
+        user.paid_track_credits = max(0, credits - 125)
         db.session.commit()
 
     return jsonify({
