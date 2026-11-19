@@ -194,6 +194,14 @@ class ProcessedStripeSession(db.Model):
     user_id = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class StudioDriveCatalog(db.Model):
+    __tablename__ = 'studio_drive_catalog'
+    id = db.Column(db.Integer, primary_key=True)
+    drive_name = db.Column(db.String(200), default='Studio External Drive')
+    base_stream_url = db.Column(db.String(500), default='')
+    tracks_json = db.Column(db.JSON, default=list)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 is_db_initialized = False
 
 def initialize_database():
@@ -3795,6 +3803,261 @@ def whatsapp_webhook():
         logger.error(f"Meta WhatsApp webhook error: {e}")
 
     return jsonify({"status": "received"}), 200
+
+
+# --- OWNER EXTERNAL HARD DRIVE LIBRARY STREAMING ---
+import mimetypes
+
+EXTERNAL_DRIVE_PATH = os.environ.get('EXTERNAL_DRIVE_PATH', '').strip()
+EXTERNAL_DRIVE_NAME = os.environ.get('EXTERNAL_DRIVE_NAME', 'Studio External Drive').strip() or 'Studio External Drive'
+OWNER_AUDIO_EXTENSIONS = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}
+_OWNER_DRIVE_LIBRARY = {
+    "drive_name": EXTERNAL_DRIVE_NAME,
+    "base_stream_url": "",
+    "tracks": []
+}
+
+
+def _parse_owner_audio_filename(filename, fallback_album="Studio External Drive"):
+    """Parses audio filename tokens into display metadata (title, artist, album)."""
+    base = re.sub(r'\.[^/.]+$', '', filename or '').replace('_', ' ').strip()
+    base = re.sub(r'^\d{1,3}[\s.\-_]+', '', base).strip()
+    parts = [p.strip() for p in re.split(r'\s[-–—]\s', base) if p.strip()]
+    if len(parts) >= 2:
+        artist = parts[0]
+        title = ' - '.join(parts[1:])
+    else:
+        artist = EXTERNAL_DRIVE_NAME
+        title = base or filename or "Studio Track"
+    return title, artist, fallback_album or EXTERNAL_DRIVE_NAME
+
+
+def _sanitize_owner_track_for_client(track, idx):
+    """Builds client-safe track JSON without ever exposing internal server file paths."""
+    try:
+        tid = int(track.get("id", idx))
+    except (TypeError, ValueError):
+        tid = idx
+    stream_url = str(track.get("stream_url") or "").strip()
+    if not stream_url and (track.get("file_path") or track.get("s3_key") or track.get("external_url")):
+        stream_url = f"/api/library/stream/{tid}"
+    return {
+        "id": tid,
+        "title": str(track.get("title") or f"Track {idx + 1}")[:240],
+        "artist": str(track.get("artist") or EXTERNAL_DRIVE_NAME)[:240],
+        "album": str(track.get("album") or EXTERNAL_DRIVE_NAME)[:240],
+        "year": str(track.get("year") or "")[:16],
+        "duration": str(track.get("duration") or "STREAM")[:32],
+        "duration_sec": int(track.get("duration_sec") or 0),
+        "file_ext": str(track.get("file_ext") or "MP3").upper()[:12],
+        "stream_url": stream_url,
+        "artwork_url": str(track.get("artwork_url") or "")[:500]
+    }
+
+
+def _load_owner_drive_library():
+    """Returns owner library catalog, preferring persistent DB state across Gunicorn workers."""
+    try:
+        row = StudioDriveCatalog.query.get(1)
+        if row and isinstance(row.tracks_json, list) and len(row.tracks_json) > 0:
+            return {
+                "drive_name": row.drive_name or EXTERNAL_DRIVE_NAME,
+                "base_stream_url": row.base_stream_url or "",
+                "tracks": row.tracks_json
+            }
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+    return _OWNER_DRIVE_LIBRARY
+
+
+def _save_owner_drive_library(drive_name, base_stream_url, tracks):
+    """Saves synced owner library catalog in memory and database for multi-worker consistency."""
+    global _OWNER_DRIVE_LIBRARY
+    _OWNER_DRIVE_LIBRARY = {
+        "drive_name": drive_name,
+        "base_stream_url": base_stream_url,
+        "tracks": tracks
+    }
+    try:
+        StudioDriveCatalog.__table__.create(db.engine, checkfirst=True)
+        row = StudioDriveCatalog.query.get(1)
+        if not row:
+            row = StudioDriveCatalog(id=1)
+            db.session.add(row)
+        row.drive_name = drive_name[:200]
+        row.base_stream_url = base_stream_url[:500]
+        row.tracks_json = tracks
+        row.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception as db_err:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logger.warning(f"Owner drive catalog DB save skipped: {db_err}")
+
+
+def scan_owner_external_drive(root_path=None):
+    """Scans a dedicated owner-attached external hard drive directory for audio files."""
+    target_root = (root_path or EXTERNAL_DRIVE_PATH or "").strip()
+    if not target_root or not os.path.isdir(target_root):
+        return 0
+
+    real_root = os.path.realpath(target_root)
+    collected = []
+    for dirpath, dirnames, filenames in os.walk(real_root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.'))
+        for fname in sorted(filenames):
+            if fname.startswith('.'):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in OWNER_AUDIO_EXTENSIONS:
+                continue
+            full_path = os.path.realpath(os.path.join(dirpath, fname))
+            if not (full_path == real_root or full_path.startswith(real_root + os.sep)):
+                continue
+            rel_dir = os.path.relpath(os.path.dirname(full_path), real_root)
+            fallback_album = os.path.basename(real_root) if rel_dir == '.' else rel_dir.replace(os.sep, ' / ')
+            title, artist, album = _parse_owner_audio_filename(fname, fallback_album)
+            track_id = len(collected)
+            collected.append({
+                "id": track_id,
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "year": "",
+                "duration": "STREAM",
+                "duration_sec": 0,
+                "file_ext": ext.lstrip('.').upper(),
+                "file_path": full_path,
+                "stream_url": f"/api/library/stream/{track_id}",
+                "artwork_url": ""
+            })
+
+    _OWNER_DRIVE_LIBRARY["drive_name"] = EXTERNAL_DRIVE_NAME
+    _OWNER_DRIVE_LIBRARY["base_stream_url"] = ""
+    _OWNER_DRIVE_LIBRARY["tracks"] = collected
+    logger.info(f"Studio external drive scan loaded {len(collected)} tracks from {real_root}")
+    return len(collected)
+
+
+@app.route('/api/library/tracks', methods=['GET'])
+def get_owner_library_tracks():
+    """Returns read-only list of tracks hosted from the owner's dedicated external hard drive."""
+    catalog = _load_owner_drive_library()
+    raw_tracks = catalog.get("tracks") or []
+    client_tracks = [_sanitize_owner_track_for_client(t, idx) for idx, t in enumerate(raw_tracks)]
+    resp = jsonify({
+        "success": True,
+        "drive_name": catalog.get("drive_name") or EXTERNAL_DRIVE_NAME,
+        "base_stream_url": catalog.get("base_stream_url") or "",
+        "track_count": len(client_tracks),
+        "tracks": client_tracks
+    })
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, 200
+
+
+@app.route('/api/library/stream/<int:track_id>', methods=['GET'])
+def stream_owner_library_track(track_id):
+    """Streams an owner external drive track via HTTP Range or signed redirect."""
+    catalog = _load_owner_drive_library()
+    tracks = catalog.get("tracks") or []
+    match = next((t for idx, t in enumerate(tracks) if int(t.get("id", idx)) == track_id), None)
+    if not match:
+        return jsonify({"error": "Track not found in Studio External Drive library."}), 404
+
+    file_path = match.get("file_path")
+    if file_path and EXTERNAL_DRIVE_PATH:
+        real_root = os.path.realpath(EXTERNAL_DRIVE_PATH)
+        real_file = os.path.realpath(file_path)
+        if real_file.startswith(real_root + os.sep) and os.path.isfile(real_file):
+            mime, _ = mimetypes.guess_type(real_file)
+            return send_file(real_file, mimetype=mime or "audio/mpeg", conditional=True)
+
+    s3_key = str(match.get("s3_key") or "").strip()
+    if s3_key and s3_client and S3_BUCKET:
+        try:
+            presigned = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET, 'Key': s3_key},
+                ExpiresIn=3600
+            )
+            resp = redirect(presigned, code=302)
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+        except Exception as s3_err:
+            logger.error(f"Studio drive B2 presign failed for {s3_key}: {s3_err}")
+
+    ext_url = str(match.get("external_url") or match.get("stream_url") or "").strip()
+    if ext_url.startswith("https://") or ext_url.startswith("http://"):
+        return redirect(ext_url, code=302)
+
+    return jsonify({"error": "Audio source for track is offline or unavailable."}), 404
+
+
+@app.route('/api/library/sync', methods=['POST'])
+def sync_owner_library_tracks():
+    """Owner-authenticated endpoint for external_drive_connector.py to publish tracks."""
+    admin_secret = os.environ.get('ADMIN_SECRET')
+    provided_secret = request.headers.get('X-Admin-Secret')
+    if not admin_secret or not provided_secret or not hmac.compare_digest(str(provided_secret), str(admin_secret)):
+        return jsonify({"error": "Unauthorized. Invalid or missing admin secret."}), 401
+
+    payload = request.get_json(silent=True) or {}
+    raw_tracks = payload.get("tracks")
+    if not isinstance(raw_tracks, list):
+        return jsonify({"error": "Invalid payload: tracks must be a list."}), 400
+
+    drive_name = str(payload.get("drive_name") or EXTERNAL_DRIVE_NAME).strip()[:200] or EXTERNAL_DRIVE_NAME
+    base_stream_url = str(payload.get("base_stream_url") or "").strip().rstrip('/')
+    if base_stream_url and not (base_stream_url.startswith("https://") or base_stream_url.startswith("http://")):
+        return jsonify({"error": "Invalid base_stream_url scheme."}), 400
+
+    sanitized = []
+    for idx, item in enumerate(raw_tracks):
+        if not isinstance(item, dict):
+            continue
+        try:
+            tid = int(item.get("id", idx))
+        except (TypeError, ValueError):
+            tid = idx
+        entry = {
+            "id": tid,
+            "title": str(item.get("title") or f"Track {idx + 1}")[:240],
+            "artist": str(item.get("artist") or drive_name)[:240],
+            "album": str(item.get("album") or drive_name)[:240],
+            "year": str(item.get("year") or "")[:16],
+            "duration": str(item.get("duration") or "STREAM")[:32],
+            "duration_sec": int(item.get("duration_sec") or 0),
+            "file_ext": str(item.get("file_ext") or "MP3").upper()[:12],
+            "artwork_url": str(item.get("artwork_url") or "")[:500]
+        }
+        s3_key = str(item.get("s3_key") or "").strip()
+        if s3_key:
+            entry["s3_key"] = s3_key[:500]
+        ext_url = str(item.get("external_url") or item.get("stream_url") or "").strip()
+        if ext_url and (ext_url.startswith("https://") or ext_url.startswith("http://") or ext_url.startswith("/")):
+            entry["stream_url"] = ext_url[:1000]
+            if ext_url.startswith("http"):
+                entry["external_url"] = ext_url[:1000]
+        elif s3_key:
+            entry["stream_url"] = f"/api/library/stream/{tid}"
+        sanitized.append(entry)
+
+    _save_owner_drive_library(drive_name, base_stream_url, sanitized)
+    return jsonify({
+        "success": True,
+        "drive_name": drive_name,
+        "synced_count": len(sanitized)
+    }), 200
+
+
+if EXTERNAL_DRIVE_PATH and os.path.isdir(EXTERNAL_DRIVE_PATH):
+    scan_owner_external_drive(EXTERNAL_DRIVE_PATH)
 
 
 if __name__ == '__main__': app.run(debug=False, port=5000, threaded=True)
