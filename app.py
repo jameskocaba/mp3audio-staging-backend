@@ -188,6 +188,12 @@ class SiteStats(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     total_tracks = db.Column(db.Integer, default=0)
 
+class ProcessedStripeSession(db.Model):
+    __tablename__ = 'processed_stripe_session'
+    session_id = db.Column(db.String(120), primary_key=True)
+    user_id = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 is_db_initialized = False
 
 def initialize_database():
@@ -878,28 +884,140 @@ def logout():
     session.pop('user_id', None)
     return jsonify({"success": True})
 
+def fulfill_checkout_session(session_obj):
+    """Idempotently fulfills a completed Stripe Checkout session and links guest accounts to Stripe email."""
+    sid = session_obj.get('id')
+    user_id = session_obj.get('client_reference_id')
+    mode = session_obj.get('mode', 'payment')
+    customer_details = session_obj.get('customer_details') or {}
+    stripe_email = (customer_details.get('email') or session_obj.get('customer_email') or '').strip().lower()
+
+    try:
+        ProcessedStripeSession.__table__.create(db.engine, checkfirst=True)
+    except Exception:
+        pass
+
+    if sid:
+        existing_record = ProcessedStripeSession.query.get(sid)
+        if existing_record:
+            user = User.query.get(existing_record.user_id) if existing_record.user_id else None
+            if not user and user_id and str(user_id).isdigit():
+                user = User.query.get(int(user_id))
+            if not user and stripe_email:
+                user = User.query.filter_by(email=stripe_email).first()
+            return user, False
+
+    user = None
+    if user_id and str(user_id).isdigit():
+        user = User.query.get(int(user_id))
+
+    if stripe_email:
+        existing_user = User.query.filter_by(email=stripe_email).first()
+        if existing_user and (not user or existing_user.id != user.id):
+            if user and user.email.startswith('anon_'):
+                existing_user.paid_track_credits = (existing_user.paid_track_credits or 0) + (user.paid_track_credits or 0)
+                user.paid_track_credits = 0
+            user = existing_user
+        elif user and user.email.startswith('anon_'):
+            user.email = stripe_email
+        elif not user:
+            user = User(email=stripe_email)
+            db.session.add(user)
+            db.session.flush()
+
+    if not user:
+        return None, False
+
+    if mode == 'payment':
+        user.paid_track_credits = (user.paid_track_credits or 0) + 350
+    elif mode == 'subscription':
+        user.subscription_active = True
+        user.stripe_customer_id = session_obj.get('customer')
+
+    if session_obj.get('customer') and not user.stripe_customer_id:
+        user.stripe_customer_id = session_obj.get('customer')
+
+    if sid:
+        db.session.add(ProcessedStripeSession(session_id=sid, user_id=user.id))
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        if sid:
+            existing_record = ProcessedStripeSession.query.get(sid)
+            if existing_record:
+                existing_owner = User.query.get(existing_record.user_id) if existing_record.user_id else user
+                return existing_owner, False
+        raise e
+
+    return user, True
+
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     user = get_or_create_user()
-    if user.email.startswith('anon_'):
-        return jsonify({"error": "Unauthorized. Please log in first."}), 401
-        
+    data = request.get_json(silent=True) or {}
+
+    origin = request.headers.get('Origin', '').rstrip('/')
+    base_url = FRONTEND_URL.rstrip('/')
+    if origin and origin in allowed_origins:
+        base_url = origin
+
+    checkout_params = {
+        'payment_method_types': ['card'],
+        'line_items': [{
+            'price': os.environ.get('STRIPE_CREDITS_PRICE_ID'),
+            'quantity': 1,
+        }],
+        'mode': 'payment',
+        'success_url': f"{base_url}/?success=true&session_id={{CHECKOUT_SESSION_ID}}",
+        'cancel_url': f"{base_url}/?canceled=true",
+        'client_reference_id': str(user.id),
+    }
+
+    req_email = (data.get('email') or '').strip().lower()
+    if not user.email.startswith('anon_'):
+        checkout_params['customer_email'] = user.email
+    elif req_email and '@' in req_email:
+        checkout_params['customer_email'] = req_email
+
     try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price': os.environ.get('STRIPE_CREDITS_PRICE_ID'), 
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f"{FRONTEND_URL.rstrip('/')}/?success=true",
-            cancel_url=f"{FRONTEND_URL.rstrip('/')}/?canceled=true",
-            client_reference_id=str(user.id),
-            customer_email=user.email
-        )
-        return jsonify({"url": session.url})
+        checkout_session = stripe.checkout.Session.create(**checkout_params)
+        session_token = serializer.dumps(user.id, salt='user-session')
+        return jsonify({"url": checkout_session.url, "token": session_token})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/checkout/verify', methods=['POST'])
+def verify_checkout_session():
+    data = request.get_json(silent=True) or {}
+    session_id = (data.get('session_id') or '').strip()
+    if not session_id:
+        return jsonify({"success": False, "error": "Missing session_id"}), 400
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        if checkout_session.get('payment_status') != 'paid' and checkout_session.get('status') != 'complete':
+            return jsonify({"success": False, "error": "Checkout session is not paid yet."}), 402
+
+        user, newly_credited = fulfill_checkout_session(checkout_session)
+        if not user:
+            return jsonify({"success": False, "error": "Could not resolve user for checkout session."}), 404
+
+        session['user_id'] = user.id
+        session_token = serializer.dumps(user.id, salt='user-session')
+        is_guest = user.email.startswith('anon_')
+        return jsonify({
+            "success": True,
+            "newly_credited": newly_credited,
+            "authenticated": not is_guest,
+            "email": None if is_guest else user.email,
+            "paid_track_credits": user.paid_track_credits,
+            "token": session_token
+        })
+    except Exception as e:
+        logger.error(f"Error verifying checkout session {session_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/webhook/stripe', methods=['POST'])
 def stripe_webhook():
@@ -919,21 +1037,10 @@ def stripe_webhook():
 
     if event['type'] == 'checkout.session.completed':
         session_obj = event['data']['object']
-        user_id = session_obj.get('client_reference_id')
-        mode = session_obj.get('mode')
-        
-        if user_id:
-            try:
-                user = User.query.get(int(user_id))
-                if user:
-                    if mode == 'payment':
-                        user.paid_track_credits += 350
-                    elif mode == 'subscription':
-                        user.subscription_active = True
-                        user.stripe_customer_id = session_obj.get('customer')
-                    db.session.commit()
-            except Exception as e:
-                logger.error(f"Error processing webhook user update: {e}")
+        try:
+            fulfill_checkout_session(session_obj)
+        except Exception as e:
+            logger.error(f"Error processing webhook user update: {e}")
                 
     elif event['type'] == 'customer.subscription.deleted':
         subscription = event['data']['object']
