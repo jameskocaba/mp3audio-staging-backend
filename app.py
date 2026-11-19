@@ -2207,6 +2207,12 @@ VIBE_PRESET_QUERIES = {
         ("Show Me How", "Men I Trust"), ("San Luis", "Gregory Alan Isakov"), ("Seventeen", "Sharon Van Etten"),
         ("Kilby Girl", "The Backseat Lovers")
     ]),
+    "downtempo": ("Midnight Downtempo & Trip-Hop Frequencies", "Sub-harmonic grooves, tape-delayed chords & nocturnal chill", [
+        ("Teardrop", "Massive Attack"), ("Porcelain", "Moby"), ("Kiara", "Bonobo"),
+        ("A Walk", "Tycho"), ("Glory Box", "Portishead"), ("Daysleeper", "Boards of Canada"),
+        ("Cirrus", "Bonobo"), ("Sun Models", "ODESZA"), ("At the River", "Groove Armada"),
+        ("Roygbiv", "Boards of Canada")
+    ]),
     "showcase": ("Genre & Mood Spotlight: Curated Essentials", "Hand-picked for pure musical groove, emotional depth & genre mastery", [
         ("Redbone", "Childish Gambino"), ("Midnight City", "M83"), ("Fast Car", "Tracy Chapman"),
         ("Dreams", "Fleetwood Mac"), ("Money Trees", "Kendrick Lamar"), ("Space Song", "Beach House"),
@@ -2270,6 +2276,8 @@ def detect_genre_and_mood(lower):
     """Identifies the intended musical genre or mood from user input without relying on literal text matching."""
     if re.search(r'\b(genre\s+and\s+mood|genre\s*&\s*mood|mood\s+and\s+genre|mood\s*&\s*genre|based\s+(up)?on\s+genre|based\s+(up)?on\s+mood|cross\s*genre|eclectic|diverse\s+(mix|playlist|songs))\b', lower):
         return 'showcase'
+    if re.search(r'\b(downtempo|trip-?hop|balearic|ambient\s*dub|chillout)\b', lower):
+        return 'downtempo'
     if re.search(r'\b(sad|melancholy|heartbreak|breakup|crying|depressed|grief|lonely|gloomy|somber|hurting|broken heart|rainy|raining|in my feelings|tears)\b', lower):
         return 'melancholy'
     if re.search(r'\b(country|americana|southern|bluegrass|nashville|western|folk rock|honky tonk)\b', lower):
