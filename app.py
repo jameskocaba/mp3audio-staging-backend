@@ -3807,15 +3807,75 @@ def whatsapp_webhook():
 
 # --- OWNER EXTERNAL HARD DRIVE LIBRARY STREAMING ---
 import mimetypes
+import threading
 
 EXTERNAL_DRIVE_PATH = os.environ.get('EXTERNAL_DRIVE_PATH', '').strip()
 EXTERNAL_DRIVE_NAME = os.environ.get('EXTERNAL_DRIVE_NAME', 'Studio External Drive').strip() or 'Studio External Drive'
 OWNER_AUDIO_EXTENSIONS = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}
+MAX_OWNER_LIBRARY_TRACKS = 10000
+_LIBRARY_RATE_LOCK = threading.Lock()
+_LIBRARY_RATE_BUCKETS = {}
+_S3_LIBRARY_KEY_RE = re.compile(r'^library/[A-Za-z0-9._/-]+$')
+_RELATIVE_STREAM_URL_RE = re.compile(r'^/api/library/stream/\d+$')
 _OWNER_DRIVE_LIBRARY = {
     "drive_name": EXTERNAL_DRIVE_NAME,
     "base_stream_url": "",
     "tracks": []
 }
+
+
+def _get_library_client_ip():
+    """Extracts best-effort client IP behind Render proxy or direct connection."""
+    forwarded = request.headers.get('X-Forwarded-For', '')
+    if forwarded:
+        first_ip = forwarded.split(',')[0].strip()
+        if first_ip:
+            return first_ip[:64]
+    return (request.remote_addr or 'unknown')[:64]
+
+
+def _check_library_rate_limit(scope, limit, window_sec, consume=True):
+    """Thread-safe, memory-bounded sliding-window rate limiter per IP and endpoint scope."""
+    now = time.time()
+    key = (scope, _get_library_client_ip())
+    cutoff = now - window_sec
+    with _LIBRARY_RATE_LOCK:
+        timestamps = [ts for ts in _LIBRARY_RATE_BUCKETS.get(key, ()) if ts > cutoff]
+        if len(timestamps) >= limit:
+            _LIBRARY_RATE_BUCKETS[key] = timestamps
+            return True
+        if consume:
+            timestamps.append(now)
+            _LIBRARY_RATE_BUCKETS[key] = timestamps
+            if len(_LIBRARY_RATE_BUCKETS) > 4096:
+                stale_keys = [
+                    k for k, vals in list(_LIBRARY_RATE_BUCKETS.items())
+                    if not vals or vals[-1] <= cutoff
+                ]
+                for sk in stale_keys:
+                    _LIBRARY_RATE_BUCKETS.pop(sk, None)
+                while len(_LIBRARY_RATE_BUCKETS) > 4096:
+                    oldest_key = next(iter(_LIBRARY_RATE_BUCKETS))
+                    _LIBRARY_RATE_BUCKETS.pop(oldest_key, None)
+        else:
+            if timestamps:
+                _LIBRARY_RATE_BUCKETS[key] = timestamps
+            else:
+                _LIBRARY_RATE_BUCKETS.pop(key, None)
+        return False
+
+
+def _sanitize_library_artwork_url(url_value):
+    """Permits only safe HTTP(S) or inline data:image artwork URLs."""
+    val = str(url_value or "").strip()[:500]
+    if val.startswith(("https://", "http://", "data:image/")):
+        return val
+    return ""
+
+
+def _is_valid_library_s3_key(s3_key):
+    """Checks that an S3 object key is scoped under library/ with no traversal segments."""
+    return bool(s3_key and '..' not in s3_key and '//' not in s3_key and _S3_LIBRARY_KEY_RE.match(s3_key))
 
 
 def _parse_owner_audio_filename(filename, fallback_album="Studio External Drive"):
@@ -3841,6 +3901,10 @@ def _sanitize_owner_track_for_client(track, idx):
     stream_url = str(track.get("stream_url") or "").strip()
     if not stream_url and (track.get("file_path") or track.get("s3_key") or track.get("external_url")):
         stream_url = f"/api/library/stream/{tid}"
+    try:
+        dur_sec = max(0, int(track.get("duration_sec") or 0))
+    except (TypeError, ValueError):
+        dur_sec = 0
     return {
         "id": tid,
         "title": str(track.get("title") or f"Track {idx + 1}")[:240],
@@ -3848,10 +3912,10 @@ def _sanitize_owner_track_for_client(track, idx):
         "album": str(track.get("album") or EXTERNAL_DRIVE_NAME)[:240],
         "year": str(track.get("year") or "")[:16],
         "duration": str(track.get("duration") or "STREAM")[:32],
-        "duration_sec": int(track.get("duration_sec") or 0),
+        "duration_sec": dur_sec,
         "file_ext": str(track.get("file_ext") or "MP3").upper()[:12],
         "stream_url": stream_url,
-        "artwork_url": str(track.get("artwork_url") or "")[:500]
+        "artwork_url": _sanitize_library_artwork_url(track.get("artwork_url"))
     }
 
 
@@ -3947,6 +4011,9 @@ def scan_owner_external_drive(root_path=None):
 @app.route('/api/library/tracks', methods=['GET'])
 def get_owner_library_tracks():
     """Returns read-only list of tracks hosted from the owner's dedicated external hard drive."""
+    if _check_library_rate_limit('tracks', 60, 60):
+        return jsonify({"error": "Too many library requests. Please try again shortly."}), 429
+
     catalog = _load_owner_drive_library()
     raw_tracks = catalog.get("tracks") or []
     client_tracks = [_sanitize_owner_track_for_client(t, idx) for idx, t in enumerate(raw_tracks)]
@@ -3958,12 +4025,16 @@ def get_owner_library_tracks():
         "tracks": client_tracks
     })
     resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp, 200
 
 
 @app.route('/api/library/stream/<int:track_id>', methods=['GET'])
 def stream_owner_library_track(track_id):
     """Streams an owner external drive track via HTTP Range or signed redirect."""
+    if _check_library_rate_limit('stream', 180, 60):
+        return jsonify({"error": "Too many stream requests. Please try again shortly."}), 429
+
     catalog = _load_owner_drive_library()
     tracks = catalog.get("tracks") or []
     match = next((t for idx, t in enumerate(tracks) if int(t.get("id", idx)) == track_id), None)
@@ -3976,10 +4047,12 @@ def stream_owner_library_track(track_id):
         real_file = os.path.realpath(file_path)
         if real_file.startswith(real_root + os.sep) and os.path.isfile(real_file):
             mime, _ = mimetypes.guess_type(real_file)
-            return send_file(real_file, mimetype=mime or "audio/mpeg", conditional=True)
+            resp = send_file(real_file, mimetype=mime or "audio/mpeg", conditional=True)
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
 
     s3_key = str(match.get("s3_key") or "").strip()
-    if s3_key and s3_client and S3_BUCKET:
+    if _is_valid_library_s3_key(s3_key) and s3_client and S3_BUCKET:
         try:
             presigned = s3_client.generate_presigned_url(
                 'get_object',
@@ -3988,13 +4061,16 @@ def stream_owner_library_track(track_id):
             )
             resp = redirect(presigned, code=302)
             resp.headers["Cache-Control"] = "no-store"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
             return resp
         except Exception as s3_err:
             logger.error(f"Studio drive B2 presign failed for {s3_key}: {s3_err}")
 
     ext_url = str(match.get("external_url") or match.get("stream_url") or "").strip()
     if ext_url.startswith("https://") or ext_url.startswith("http://"):
-        return redirect(ext_url, code=302)
+        resp = redirect(ext_url, code=302)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
     return jsonify({"error": "Audio source for track is offline or unavailable."}), 404
 
@@ -4002,15 +4078,23 @@ def stream_owner_library_track(track_id):
 @app.route('/api/library/sync', methods=['POST'])
 def sync_owner_library_tracks():
     """Owner-authenticated endpoint for external_drive_connector.py to publish tracks."""
+    if _check_library_rate_limit('sync', 10, 60):
+        return jsonify({"error": "Too many sync requests. Please wait before retrying."}), 429
+    if _check_library_rate_limit('sync_auth_fail', 5, 300, consume=False):
+        return jsonify({"error": "Too many failed authentication attempts. Locked temporarily."}), 429
+
     admin_secret = os.environ.get('ADMIN_SECRET')
     provided_secret = request.headers.get('X-Admin-Secret')
     if not admin_secret or not provided_secret or not hmac.compare_digest(str(provided_secret), str(admin_secret)):
+        _check_library_rate_limit('sync_auth_fail', 5, 300, consume=True)
         return jsonify({"error": "Unauthorized. Invalid or missing admin secret."}), 401
 
     payload = request.get_json(silent=True) or {}
     raw_tracks = payload.get("tracks")
     if not isinstance(raw_tracks, list):
         return jsonify({"error": "Invalid payload: tracks must be a list."}), 400
+    if len(raw_tracks) > MAX_OWNER_LIBRARY_TRACKS:
+        return jsonify({"error": f"Track limit exceeded (max {MAX_OWNER_LIBRARY_TRACKS})."}), 400
 
     drive_name = str(payload.get("drive_name") or EXTERNAL_DRIVE_NAME).strip()[:200] or EXTERNAL_DRIVE_NAME
     base_stream_url = str(payload.get("base_stream_url") or "").strip().rstrip('/')
@@ -4025,6 +4109,10 @@ def sync_owner_library_tracks():
             tid = int(item.get("id", idx))
         except (TypeError, ValueError):
             tid = idx
+        try:
+            dur_sec = max(0, int(item.get("duration_sec") or 0))
+        except (TypeError, ValueError):
+            dur_sec = 0
         entry = {
             "id": tid,
             "title": str(item.get("title") or f"Track {idx + 1}")[:240],
@@ -4032,17 +4120,21 @@ def sync_owner_library_tracks():
             "album": str(item.get("album") or drive_name)[:240],
             "year": str(item.get("year") or "")[:16],
             "duration": str(item.get("duration") or "STREAM")[:32],
-            "duration_sec": int(item.get("duration_sec") or 0),
+            "duration_sec": dur_sec,
             "file_ext": str(item.get("file_ext") or "MP3").upper()[:12],
-            "artwork_url": str(item.get("artwork_url") or "")[:500]
+            "artwork_url": _sanitize_library_artwork_url(item.get("artwork_url"))
         }
         s3_key = str(item.get("s3_key") or "").strip()
         if s3_key:
+            if not _is_valid_library_s3_key(s3_key):
+                return jsonify({"error": f"Invalid s3_key format for track {idx}."}), 400
             entry["s3_key"] = s3_key[:500]
         ext_url = str(item.get("external_url") or item.get("stream_url") or "").strip()
-        if ext_url and (ext_url.startswith("https://") or ext_url.startswith("http://") or ext_url.startswith("/")):
+        if ext_url:
+            if not (ext_url.startswith("https://") or ext_url.startswith("http://") or _RELATIVE_STREAM_URL_RE.match(ext_url)):
+                return jsonify({"error": f"Invalid stream URL format for track {idx}."}), 400
             entry["stream_url"] = ext_url[:1000]
-            if ext_url.startswith("http"):
+            if ext_url.startswith(("https://", "http://")):
                 entry["external_url"] = ext_url[:1000]
         elif s3_key:
             entry["stream_url"] = f"/api/library/stream/{tid}"
