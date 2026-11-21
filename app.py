@@ -3822,6 +3822,8 @@ _OWNER_DRIVE_LIBRARY = {
     "base_stream_url": "",
     "tracks": []
 }
+_LAST_EXTERNAL_DRIVE_SCAN_TS = 0.0
+_EXTERNAL_DRIVE_SCAN_LOCK = threading.Lock()
 
 
 def _get_library_client_ip():
@@ -3920,7 +3922,9 @@ def _sanitize_owner_track_for_client(track, idx):
 
 
 def _load_owner_drive_library():
-    """Returns owner library catalog, preferring persistent DB state across Gunicorn workers."""
+    """Returns owner library catalog, preferring live local drive when configured."""
+    if EXTERNAL_DRIVE_PATH:
+        return _OWNER_DRIVE_LIBRARY
     try:
         row = StudioDriveCatalog.query.get(1)
         if row and isinstance(row.tracks_json, list) and len(row.tracks_json) > 0:
@@ -3966,14 +3970,19 @@ def _save_owner_drive_library(drive_name, base_stream_url, tracks):
 
 def scan_owner_external_drive(root_path=None):
     """Scans a dedicated owner-attached external hard drive directory for audio files."""
+    global _LAST_EXTERNAL_DRIVE_SCAN_TS
+    _LAST_EXTERNAL_DRIVE_SCAN_TS = time.time()
     target_root = (root_path or EXTERNAL_DRIVE_PATH or "").strip()
     if not target_root or not os.path.isdir(target_root):
+        _OWNER_DRIVE_LIBRARY["drive_name"] = EXTERNAL_DRIVE_NAME
+        _OWNER_DRIVE_LIBRARY["base_stream_url"] = ""
+        _OWNER_DRIVE_LIBRARY["tracks"] = []
         return 0
 
     real_root = os.path.realpath(target_root)
     collected = []
     for dirpath, dirnames, filenames in os.walk(real_root):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.'))
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith('.') and d not in {'$RECYCLE.BIN', 'System Volume Information'})
         for fname in sorted(filenames):
             if fname.startswith('.'):
                 continue
@@ -4013,6 +4022,11 @@ def get_owner_library_tracks():
     """Returns read-only list of tracks hosted from the owner's dedicated external hard drive."""
     if _check_library_rate_limit('tracks', 60, 60):
         return jsonify({"error": "Too many library requests. Please try again shortly."}), 429
+
+    if EXTERNAL_DRIVE_PATH and (time.time() - _LAST_EXTERNAL_DRIVE_SCAN_TS >= 5.0):
+        with _EXTERNAL_DRIVE_SCAN_LOCK:
+            if time.time() - _LAST_EXTERNAL_DRIVE_SCAN_TS >= 5.0:
+                scan_owner_external_drive(EXTERNAL_DRIVE_PATH)
 
     catalog = _load_owner_drive_library()
     raw_tracks = catalog.get("tracks") or []
